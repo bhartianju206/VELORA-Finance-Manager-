@@ -1,11 +1,13 @@
 package com.example.velora.data.repository
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.velora.util.awaitTask
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +31,43 @@ sealed interface AuthState {
 }
 
 class AuthRepository(private val context: Context) {
+
+    companion object {
+        private const val TAG = "VeloraAuth"
+        const val DEBUG_SHA1 = "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74"
+        const val FIREBASE_PROJECT_ID = "velora-finance-manager"
+        const val WEB_CLIENT_ID = "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com"
+
+        fun getInstalledApkSha1(context: Context): String {
+            return try {
+                val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    val packageInfo = context.packageManager.getPackageInfo(
+                        context.packageName,
+                        android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+                    )
+                    packageInfo.signingInfo?.apkContentsSigners
+                } else {
+                    @Suppress("DEPRECATION")
+                    val packageInfo = context.packageManager.getPackageInfo(
+                        context.packageName,
+                        android.content.pm.PackageManager.GET_SIGNATURES
+                    )
+                    @Suppress("DEPRECATION")
+                    packageInfo.signatures
+                }
+                val cert = signatures?.firstOrNull()?.toByteArray()
+                if (cert != null) {
+                    val md = MessageDigest.getInstance("SHA-1")
+                    val digest = md.digest(cert)
+                    digest.joinToString(":") { "%02X".format(it) }
+                } else {
+                    "Unavailable"
+                }
+            } catch (e: Exception) {
+                "Error: ${e.message}"
+            }
+        }
+    }
 
     private val KEY_USER_ID = stringPreferencesKey("auth_user_id")
     private val KEY_USER_EMAIL = stringPreferencesKey("auth_user_email")
@@ -155,16 +194,19 @@ class AuthRepository(private val context: Context) {
         val prefs = context.dataStore.data.first()
         val customClientId = prefs[KEY_GOOGLE_WEB_CLIENT_ID]
         if (!customClientId.isNullOrBlank()) {
+            Log.d(TAG, "Using custom web client ID: $customClientId")
             return customClientId.trim()
         }
         val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
         if (resId != 0) {
             val resVal = context.getString(resId)
             if (resVal.isNotBlank() && !resVal.startsWith("YOUR_")) {
+                Log.d(TAG, "Resolved web client ID from resources: $resVal")
                 return resVal.trim()
             }
         }
-        return "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com"
+        Log.d(TAG, "Using bundled default web client ID: $WEB_CLIENT_ID")
+        return WEB_CLIENT_ID
     }
 
     suspend fun saveWebClientId(clientId: String) {
@@ -179,11 +221,18 @@ class AuthRepository(private val context: Context) {
 
     suspend fun signInWithGoogleIdToken(idToken: String): Result<VeloraUser> {
         return try {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                Log.i(TAG, "Initializing FirebaseApp before sign-in...")
+                FirebaseApp.initializeApp(context)
+            }
             val auth = FirebaseAuth.getInstance()
+            Log.d(TAG, "Exchanging Google ID token (length=${idToken.length}) with Firebase signInWithCredential...")
             val credential = GoogleAuthProvider.getCredential(idToken, null)
             val authResult = auth.signInWithCredential(credential).awaitTask()
             val firebaseUser = authResult.user
                 ?: return Result.failure(IllegalStateException("Firebase user was null after authentication."))
+
+            Log.i(TAG, "Firebase Auth confirmed! UID=${firebaseUser.uid}, Email=${firebaseUser.email}")
 
             val googleEmail = firebaseUser.email ?: "google-user@velora.finance"
             val googleName = firebaseUser.displayName ?: googleEmail.substringBefore("@")
@@ -209,8 +258,10 @@ class AuthRepository(private val context: Context) {
                 p[KEY_IS_GOOGLE] = true
             }
 
+            Log.i(TAG, "Velora user session persisted successfully for $userId ($googleEmail)")
             Result.success(VeloraUser(userId, googleEmail.lowercase(), googleName, true))
         } catch (e: Exception) {
+            Log.e(TAG, "signInWithGoogleIdToken failed with exception: ${e.javaClass.name}: ${e.message}", e)
             Result.failure(e)
         }
     }

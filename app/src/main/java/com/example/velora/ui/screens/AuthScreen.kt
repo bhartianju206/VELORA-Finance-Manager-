@@ -51,11 +51,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.util.Log
 import androidx.compose.ui.platform.LocalContext
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.compose.runtime.setValue
@@ -107,6 +110,9 @@ fun AuthScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var successMessage by remember { mutableStateOf<String?>(null) }
     var showGoogleConfigDialog by remember { mutableStateOf(false) }
+    var showAuthErrorDialog by remember { mutableStateOf(false) }
+    var authErrorTitle by remember { mutableStateOf("Sign-In Failed") }
+    var authErrorDetail by remember { mutableStateOf("") }
     var webClientIdInput by remember { mutableStateOf("") }
     var isCopiedSha by remember { mutableStateOf(false) }
 
@@ -116,37 +122,121 @@ fun AuthScreen(
         successMessage = null
         scope.launch {
             try {
+                val cleanClientId = clientId.trim()
+                Log.i("VeloraAuth", "1/4: Initiating Google Sign-In with serverClientId=$cleanClientId")
                 val credentialManager = CredentialManager.create(context)
-                val googleIdOption = GetSignInWithGoogleOption.Builder(clientId.trim())
-                    .build()
-                val request = GetCredentialRequest.Builder()
-                    .addCredentialOption(googleIdOption)
+
+                val googleIdOption = GetGoogleIdOption.Builder()
+                    .setFilterByAuthorizedAccounts(false)
+                    .setServerClientId(cleanClientId)
+                    .setAutoSelectEnabled(false)
                     .build()
 
+                val siwgOption = GetSignInWithGoogleOption.Builder(cleanClientId)
+                    .build()
+
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
+                    .addCredentialOption(siwgOption)
+                    .build()
+
+                Log.d("VeloraAuth", "2/4: Prompting account chooser via CredentialManager...")
                 val result = credentialManager.getCredential(context = context, request = request)
                 val credential = result.credential
-                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                    val idToken = googleIdTokenCredential.idToken
-                    authRepository.signInWithGoogleIdToken(idToken)
-                        .onSuccess {
-                            onAuthSuccess()
+                Log.i("VeloraAuth", "3/4: Credential returned. Class=${credential.javaClass.simpleName}, type=${credential.type}")
+
+                val idToken: String? = when {
+                    credential is CustomCredential && (
+                        credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL ||
+                        credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_SIWG_CREDENTIAL
+                    ) -> {
+                        try {
+                            val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                            Log.d("VeloraAuth", "Parsed GoogleIdTokenCredential for user: ${googleIdTokenCredential.id}")
+                            googleIdTokenCredential.idToken
+                        } catch (e: Exception) {
+                            Log.e("VeloraAuth", "Error parsing GoogleIdTokenCredential bundle", e)
+                            credential.data.getString("com.google.android.libraries.identity.googleid.BUNDLE_KEY_ID_TOKEN")
+                                ?: credential.data.getString("id_token")
                         }
-                        .onFailure {
-                            errorMessage = "Firebase Auth failed: ${it.localizedMessage}"
-                        }
-                } else {
-                    errorMessage = "Unexpected credential format returned from Google Sign-In."
+                    }
+                    credential is CustomCredential -> {
+                        Log.w("VeloraAuth", "CustomCredential type '${credential.type}' not standard. Checking bundle keys...")
+                        credential.data.getString("com.google.android.libraries.identity.googleid.BUNDLE_KEY_ID_TOKEN")
+                            ?: credential.data.getString("id_token")
+                    }
+                    else -> {
+                        Log.e("VeloraAuth", "Non-custom credential class received: ${credential.javaClass.name}")
+                        null
+                    }
                 }
+
+                if (idToken.isNullOrBlank()) {
+                    val err = "Unable to retrieve Google ID token from response (type: ${credential.type})."
+                    Log.e("VeloraAuth", err)
+                    errorMessage = err
+                    authErrorTitle = "Google ID Token Missing"
+                    authErrorDetail = err
+                    showAuthErrorDialog = true
+                    return@launch
+                }
+
+                Log.i("VeloraAuth", "4/4: Exchanging ID token (length=${idToken.length}) with Firebase Authentication...")
+                authRepository.signInWithGoogleIdToken(idToken)
+                    .onSuccess { user ->
+                        Log.i("VeloraAuth", "✓ Google Sign-In & Firebase Auth SUCCESS! User: ${user.email} (UID: ${user.id})")
+                        onAuthSuccess()
+                    }
+                    .onFailure { error ->
+                        Log.e("VeloraAuth", "✗ Firebase signInWithCredential failed", error)
+                        val fMsg = error.localizedMessage ?: error.javaClass.simpleName
+                        val cleanMsg = when {
+                            fMsg.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) ||
+                            fMsg.contains("disabled for this Firebase project", ignoreCase = true) -> {
+                                "Google Sign-In is disabled in your Firebase project.\n\nTo fix:\n1. Open Firebase Console (velora-finance-manager)\n2. Navigate to Build → Authentication → Sign-in method\n3. Click 'Google' and toggle Enable to ON\n4. Set a Project support email and Save"
+                            }
+                            fMsg.contains("INVALID_CREDENTIAL", ignoreCase = true) ||
+                            fMsg.contains("invalid token", ignoreCase = true) -> {
+                                "Invalid Google credential token. The token audience does not match your Firebase Web Client ID ($cleanClientId) or has expired."
+                            }
+                            else -> {
+                                "Firebase Authentication failed: $fMsg"
+                            }
+                        }
+                        errorMessage = cleanMsg
+                        authErrorTitle = "Firebase Authentication Failed"
+                        authErrorDetail = cleanMsg
+                        showAuthErrorDialog = true
+                    }
+
             } catch (e: GetCredentialCancellationException) {
-                // User dismissed the account chooser
+                Log.w("VeloraAuth", "Google account selection was dismissed or cancelled by user (${e.message})")
+                // User dismissed the chooser; retain login state and do not show jarring error modal
             } catch (e: Exception) {
+                Log.e("VeloraAuth", "CredentialManager getCredential failed with exception: ${e.javaClass.name}: ${e.message}", e)
                 val msg = e.localizedMessage ?: e.javaClass.simpleName
-                if (msg.contains("10") || msg.contains("12500") || msg.contains("DEVELOPER_ERROR")) {
-                    errorMessage = "Google Sign-In Error (10): Ensure SHA-1 fingerprint is registered in Firebase Console and Google Auth provider is enabled."
-                } else {
-                    errorMessage = "Google Sign-In failed: $msg"
+                val cleanMsg = when {
+                    msg.contains("10") || msg.contains("12500") || msg.contains("DEVELOPER_ERROR", ignoreCase = true) -> {
+                        "Google Sign-In Error (Code 10 - DEVELOPER_ERROR):\n\n" +
+                        "Google Play Services rejected the sign-in request due to a signature/configuration mismatch:\n\n" +
+                        "1. SHA-1 Fingerprint:\nEnsure SHA-1 ${AuthRepository.DEBUG_SHA1} is added under your Android app in Firebase Console.\n\n" +
+                        "2. Keystore Match:\nVerify the installed APK was signed with the official debug keystore (re-install the latest APK built with restored debug key).\n\n" +
+                        "3. Google Auth Provider:\nEnsure 'Google' is turned ON in Firebase Console > Authentication > Sign-in method."
+                    }
+                    msg.contains("16") || msg.contains("CANCELLED", ignoreCase = true) -> {
+                        "Google Sign-In request was cancelled."
+                    }
+                    msg.contains("NoCredentialException", ignoreCase = true) -> {
+                        "No Google accounts found on this device. Please log into a Google account in Android system settings."
+                    }
+                    else -> {
+                        "Google Sign-In failed: $msg\n(${e.javaClass.simpleName})"
+                    }
                 }
+                errorMessage = cleanMsg
+                authErrorTitle = "Google Sign-In Failed"
+                authErrorDetail = cleanMsg
+                showAuthErrorDialog = true
             } finally {
                 isLoading = false
             }
@@ -481,12 +571,59 @@ fun AuthScreen(
                         }
                     }
 
+                    // Prominent Google Sign-In Error Banner right beneath the button so it is never missed
+                    if (errorMessage != null) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = ExpenseCoral.copy(alpha = 0.12f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ExpenseCoral.copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth().testTag("auth_error_banner")
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Lock,
+                                        contentDescription = "Error",
+                                        tint = ExpenseCoral,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Authentication Alert", color = ExpenseCoral, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    errorMessage!!,
+                                    color = TextPrimary,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            scope.launch {
+                                                webClientIdInput = authRepository.resolveWebClientId() ?: AuthRepository.WEB_CLIENT_ID
+                                                showGoogleConfigDialog = true
+                                            }
+                                        }
+                                    ) {
+                                        Text("Fix / Verify Keys", color = EmeraldMint, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(6.dp))
 
                     TextButton(
                         onClick = {
                             scope.launch {
-                                webClientIdInput = authRepository.resolveWebClientId() ?: ""
+                                webClientIdInput = authRepository.resolveWebClientId() ?: AuthRepository.WEB_CLIENT_ID
                                 showGoogleConfigDialog = true
                             }
                         },
@@ -517,25 +654,94 @@ fun AuthScreen(
             Spacer(modifier = Modifier.height(48.dp))
         }
 
-        // Real Google Sign-In & Firebase Configuration Dialog
-        if (showGoogleConfigDialog) {
+        // Dedicated Detailed Error Dialog on Sign-In Failure
+        if (showAuthErrorDialog) {
             AlertDialog(
-                onDismissRequest = { showGoogleConfigDialog = false },
-                title = { Text("Google Sign-In & Firebase Setup", fontWeight = FontWeight.Bold) },
+                onDismissRequest = { showAuthErrorDialog = false },
+                title = { Text(authErrorTitle, fontWeight = FontWeight.Bold, color = ExpenseCoral) },
                 text = {
                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         Text(
-                            "Velora authenticates using official Android Credential Manager and Firebase Authentication.",
+                            authErrorDetail,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = TextPrimary
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showAuthErrorDialog = false
+                            scope.launch {
+                                webClientIdInput = authRepository.resolveWebClientId() ?: AuthRepository.WEB_CLIENT_ID
+                                showGoogleConfigDialog = true
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                    ) {
+                        Text("Check Setup / Keys", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAuthErrorDialog = false }) {
+                        Text("Dismiss", color = TextMuted)
+                    }
+                }
+            )
+        }
+
+        // Real Google Sign-In & Firebase Configuration Dialog
+        if (showGoogleConfigDialog) {
+            val installedSha = remember { AuthRepository.getInstalledApkSha1(context) }
+            val isShaMatch = installedSha.equals(AuthRepository.DEBUG_SHA1, ignoreCase = true)
+
+            AlertDialog(
+                onDismissRequest = { showGoogleConfigDialog = false },
+                title = { Text("Google Sign-In & Firebase Status", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Text(
+                            "Velora authenticates with Google Identity Services & Firebase Authentication.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        Text("Firebase Project: velora-finance-manager", color = EmeraldMint, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Text("Package: com.aistudio.velora.kxmpzq", color = TextMuted, fontSize = 12.sp)
+                        Text("Firebase Project: ${AuthRepository.FIREBASE_PROJECT_ID}", color = EmeraldMint, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Text("Package Name: ${context.packageName}", color = TextMuted, fontSize = 12.sp)
 
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("SHA-1 Fingerprint (Required in Firebase Console):", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("Runtime APK Signature SHA-1:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isShaMatch) EmeraldDark.copy(alpha = 0.3f) else ExpenseCoral.copy(alpha = 0.15f)
+                            ),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (isShaMatch) EmeraldPrimary else ExpenseCoral
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    installedSha,
+                                    fontSize = 11.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    color = if (isShaMatch) EmeraldMint else ExpenseCoral
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    if (isShaMatch) "✓ MATCHES Firebase Registered Key" else "⚠️ Key mismatch! Must match Firebase SHA-1.",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isShaMatch) EmeraldMint else ExpenseCoral
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("Firebase Registered SHA-1:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(4.dp))
                         Card(
                             colors = CardDefaults.cardColors(containerColor = AmoledBackground),
@@ -544,7 +750,7 @@ fun AuthScreen(
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74",
+                                    AuthRepository.DEBUG_SHA1,
                                     fontSize = 11.sp,
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                                     color = EmeraldMint
@@ -553,7 +759,7 @@ fun AuthScreen(
                                 Button(
                                     onClick = {
                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                        val clip = ClipData.newPlainText("Velora SHA1", "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74")
+                                        val clip = ClipData.newPlainText("Velora SHA1", AuthRepository.DEBUG_SHA1)
                                         clipboard?.setPrimaryClip(clip)
                                         isCopiedSha = true
                                     },
@@ -567,15 +773,15 @@ fun AuthScreen(
 
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
-                            "Firebase Console Steps:\n" +
-                                    "1. In Authentication → Sign-in method: Enable 'Google'.\n" +
-                                    "2. In Project Settings → Your apps: Add the SHA-1 fingerprint above.\n" +
-                                    "3. Paste your Web Client ID below (ends with .apps.googleusercontent.com):",
+                            "Firebase Console Requirements:\n" +
+                                    "1. Authentication → Sign-in method: Enable 'Google'.\n" +
+                                    "2. Project Settings → Your apps: Ensure SHA-1 is added.\n" +
+                                    "3. Web Client ID (serverClientId):",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
                         OutlinedTextField(
                             value = webClientIdInput,
@@ -594,25 +800,21 @@ fun AuthScreen(
                 confirmButton = {
                     Button(
                         onClick = {
-                            if (webClientIdInput.isNotBlank()) {
-                                scope.launch {
-                                    authRepository.saveWebClientId(webClientIdInput.trim())
-                                    showGoogleConfigDialog = false
-                                    executeGoogleSignIn(webClientIdInput.trim())
-                                }
-                            } else {
+                            val targetId = webClientIdInput.trim().ifEmpty { AuthRepository.WEB_CLIENT_ID }
+                            scope.launch {
+                                authRepository.saveWebClientId(targetId)
                                 showGoogleConfigDialog = false
+                                executeGoogleSignIn(targetId)
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
-                        enabled = webClientIdInput.isNotBlank()
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
                     ) {
                         Text("Connect & Sign In", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showGoogleConfigDialog = false }) {
-                        Text("Cancel", color = TextMuted)
+                        Text("Close", color = TextMuted)
                     }
                 }
             )
