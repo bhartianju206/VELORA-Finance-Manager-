@@ -1,0 +1,6 @@
+{
+  "name": "Velora",
+  "description": "Premium personal finance and Udhaar management with AMOLED design and private Google Drive backup.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
