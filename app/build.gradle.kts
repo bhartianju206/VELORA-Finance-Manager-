@@ -23,14 +23,25 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  // Ensure deterministic debug signing by restoring debug.keystore from debug.keystore.base64 if not present
+  // Ensure deterministic debug signing by restoring debug.keystore from env or base64 file if not present
   val debugKeystoreFile = file("${rootDir}/debug.keystore")
   val base64Keystore = file("${rootDir}/debug.keystore.base64")
-  if (!debugKeystoreFile.exists() && base64Keystore.exists()) {
-    try {
-      val decoded = Base64.getDecoder().decode(base64Keystore.readText().trim())
-      debugKeystoreFile.writeBytes(decoded)
-    } catch (_: Exception) {}
+  val envKeystoreBase64 = System.getenv("DEBUG_KEYSTORE_BASE64")
+
+  if (!debugKeystoreFile.exists()) {
+    if (!envKeystoreBase64.isNullOrBlank()) {
+      try {
+        val cleanBase64 = envKeystoreBase64.replace("\\s".toRegex(), "")
+        val decoded = Base64.getDecoder().decode(cleanBase64)
+        debugKeystoreFile.writeBytes(decoded)
+      } catch (_: Exception) {}
+    } else if (base64Keystore.exists()) {
+      try {
+        val cleanBase64 = base64Keystore.readText().replace("\\s".toRegex(), "")
+        val decoded = Base64.getDecoder().decode(cleanBase64)
+        debugKeystoreFile.writeBytes(decoded)
+      } catch (_: Exception) {}
+    }
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

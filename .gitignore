@@ -14,5 +14,6 @@
 .externalNativeBuild
 .cxx
 local.properties
-# Keystore files (debug.keystore is tracked to guarantee stable signing fingerprints)
-# debug.keystore
+# Keystore files (debug keystore is preserved for stable signing fingerprints across CI and devices)
+!debug.keystore
+!debug.keystore.base64

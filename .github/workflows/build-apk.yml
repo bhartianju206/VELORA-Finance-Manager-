@@ -40,23 +40,42 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Restore permanent debug keystore
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ -f "./debug.keystore.base64" ]; then
-            echo "Restoring permanent debug keystore from debug.keystore.base64..."
-            base64 -d ./debug.keystore.base64 > ./debug.keystore
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "Restoring permanent debug keystore from GitHub Secret DEBUG_KEYSTORE_BASE64..."
+            echo "$DEBUG_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > ./debug.keystore
+          elif [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring permanent debug keystore from ./debug.keystore.base64..."
+            tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
           elif [ -f "./debug.keystore" ]; then
-            echo "Permanent debug keystore already exists."
+            echo "Permanent debug keystore already exists in repository."
           else
-            echo "Error: Neither debug.keystore nor debug.keystore.base64 was found."
+            echo "Error: Neither debug.keystore nor debug.keystore.base64 was found in the repository, and GitHub Secret DEBUG_KEYSTORE_BASE64 is not set."
+            echo ""
+            echo "To fix this:"
+            echo "1. Go to your GitHub repository -> Settings -> Secrets and variables -> Actions"
+            echo "2. Add a new repository secret named DEBUG_KEYSTORE_BASE64"
+            echo "3. Paste the permanent base64-encoded debug keystore string."
+            echo "Alternatively, commit debug.keystore.base64 to your repository root."
             exit 1
           fi
+
+          if [ ! -s "./debug.keystore" ]; then
+            echo "Error: ./debug.keystore was created but is empty or invalid."
+            exit 1
+          fi
+
           echo "Verified Permanent Debug Keystore Fingerprints:"
           keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:" || true
 
       - name: Build Debug APK
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Verify APK output
+      - name: Verify APK output and signing fingerprints
         run: |
           APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
           if [ ! -f "$APK_PATH" ]; then
@@ -65,6 +84,16 @@ jobs:
           fi
           echo "APK generated successfully at: $APK_PATH"
           ls -lh "$APK_PATH"
+
+          echo "=============================================="
+          echo "Verifying APK signing certificate with apksigner:"
+          APKSIGNER=$(find ${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools -name apksigner 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
+            $APKSIGNER verify --print-certs "$APK_PATH" || true
+          else
+            echo "apksigner not found in SDK, skipping apksigner check."
+          fi
+          echo "=============================================="
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -108,6 +137,9 @@ jobs:
           echo "=============================================="
           
           echo "### Debug APK Build Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Package Name**: \`com.aistudio.velora.kxmpzq\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Expected Signing SHA-1 (Firebase)**: \`2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.create_release.outcome }}" = "success" ]; then
             echo "✅ **Release Published Successfully!**" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
