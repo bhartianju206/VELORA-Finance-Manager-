@@ -48,6 +48,16 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import androidx.compose.ui.platform.LocalContext
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,6 +93,7 @@ fun AuthScreen(
     authRepository: AuthRepository,
     onAuthSuccess: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableIntStateOf(0) } // 0: Login, 1: Register, 2: Reset
 
@@ -95,7 +106,52 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var successMessage by remember { mutableStateOf<String?>(null) }
-    var showGoogleSetupDialog by remember { mutableStateOf(false) }
+    var showGoogleConfigDialog by remember { mutableStateOf(false) }
+    var webClientIdInput by remember { mutableStateOf("") }
+    var isCopiedSha by remember { mutableStateOf(false) }
+
+    fun executeGoogleSignIn(clientId: String) {
+        isLoading = true
+        errorMessage = null
+        successMessage = null
+        scope.launch {
+            try {
+                val credentialManager = CredentialManager.create(context)
+                val googleIdOption = GetSignInWithGoogleOption.Builder(clientId.trim())
+                    .build()
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
+                    .build()
+
+                val result = credentialManager.getCredential(context = context, request = request)
+                val credential = result.credential
+                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                    val idToken = googleIdTokenCredential.idToken
+                    authRepository.signInWithGoogleIdToken(idToken)
+                        .onSuccess {
+                            onAuthSuccess()
+                        }
+                        .onFailure {
+                            errorMessage = "Firebase Auth failed: ${it.localizedMessage}"
+                        }
+                } else {
+                    errorMessage = "Unexpected credential format returned from Google Sign-In."
+                }
+            } catch (e: GetCredentialCancellationException) {
+                // User dismissed the account chooser
+            } catch (e: Exception) {
+                val msg = e.localizedMessage ?: e.javaClass.simpleName
+                if (msg.contains("10") || msg.contains("12500") || msg.contains("DEVELOPER_ERROR")) {
+                    errorMessage = "Google Sign-In Error (10): Ensure SHA-1 fingerprint is registered in Firebase Console and Google Auth provider is enabled."
+                } else {
+                    errorMessage = "Google Sign-In failed: $msg"
+                }
+            } finally {
+                isLoading = false
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -391,14 +447,24 @@ fun AuthScreen(
 
                     // Real Functional Google Sign-In button with Google G branding
                     OutlinedButton(
-                        onClick = { showGoogleSetupDialog = true },
+                        onClick = {
+                            scope.launch {
+                                val detectedClientId = authRepository.resolveWebClientId()
+                                if (detectedClientId.isNullOrBlank()) {
+                                    showGoogleConfigDialog = true
+                                } else {
+                                    executeGoogleSignIn(detectedClientId)
+                                }
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
                             .testTag("google_sign_in_button"),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, AmoledBorder)
+                        border = androidx.compose.foundation.BorderStroke(1.dp, AmoledBorder),
+                        enabled = !isLoading
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             // Official Google G indicator
@@ -415,7 +481,21 @@ fun AuthScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                webClientIdInput = authRepository.resolveWebClientId() ?: ""
+                                showGoogleConfigDialog = true
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("google_auth_setup_button")
+                    ) {
+                        Text("Firebase & Google Sign-In Setup / Keys", color = TextMuted, fontSize = 12.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     // Quick Demo credentials button
                     TextButton(
@@ -437,39 +517,101 @@ fun AuthScreen(
             Spacer(modifier = Modifier.height(48.dp))
         }
 
-        // Google Sign-In Setup & Instant Test Dialog
-        if (showGoogleSetupDialog) {
+        // Real Google Sign-In & Firebase Configuration Dialog
+        if (showGoogleConfigDialog) {
             AlertDialog(
-                onDismissRequest = { showGoogleSetupDialog = false },
-                title = { Text("Google Sign-In", fontWeight = FontWeight.Bold) },
+                onDismissRequest = { showGoogleConfigDialog = false },
+                title = { Text("Google Sign-In & Firebase Setup", fontWeight = FontWeight.Bold) },
                 text = {
-                    Column {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         Text(
-                            "Google Sign-In requires an active google-services.json and OAuth 2.0 Web Client ID registered in Google Cloud Console.\n\n" +
-                                    "For local testing and evaluation, you can immediately sign in with a simulated Google Account credentials:",
-                            style = MaterialTheme.typography.bodyMedium,
+                            "Velora authenticates using official Android Credential Manager and Firebase Authentication.",
+                            style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text("Account: alex.google@velora.finance", color = EmeraldMint, fontWeight = FontWeight.SemiBold)
+
+                        Text("Firebase Project: velora-finance-manager", color = EmeraldMint, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text("Package: com.aistudio.velora.kxmpzq", color = TextMuted, fontSize = 12.sp)
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("SHA-1 Fingerprint (Required in Firebase Console):", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = AmoledBackground),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, AmoledBorder),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74",
+                                    fontSize = 11.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    color = EmeraldMint
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                        val clip = ClipData.newPlainText("Velora SHA1", "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74")
+                                        clipboard?.setPrimaryClip(clip)
+                                        isCopiedSha = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = if (isCopiedSha) EmeraldDark else EmeraldPrimary)
+                                ) {
+                                    Text(if (isCopiedSha) "✓ SHA-1 Copied!" else "Copy SHA-1 Fingerprint", fontSize = 12.sp)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            "Firebase Console Steps:\n" +
+                                    "1. In Authentication → Sign-in method: Enable 'Google'.\n" +
+                                    "2. In Project Settings → Your apps: Add the SHA-1 fingerprint above.\n" +
+                                    "3. Paste your Web Client ID below (ends with .apps.googleusercontent.com):",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = webClientIdInput,
+                            onValueChange = { webClientIdInput = it },
+                            label = { Text("OAuth Web Client ID") },
+                            placeholder = { Text("e.g. 675344395387-xxx.apps.googleusercontent.com") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("web_client_id_input"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = EmeraldPrimary,
+                                unfocusedBorderColor = AmoledBorder
+                            )
+                        )
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
-                            showGoogleSetupDialog = false
-                            scope.launch {
-                                authRepository.loginWithGoogleAccount("alex.google@velora.finance", "Alex Turner (Google)")
-                                    .onSuccess { onAuthSuccess() }
+                            if (webClientIdInput.isNotBlank()) {
+                                scope.launch {
+                                    authRepository.saveWebClientId(webClientIdInput.trim())
+                                    showGoogleConfigDialog = false
+                                    executeGoogleSignIn(webClientIdInput.trim())
+                                }
+                            } else {
+                                showGoogleConfigDialog = false
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                        enabled = webClientIdInput.isNotBlank()
                     ) {
-                        Text("Sign In With Google Test Account", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
+                        Text("Connect & Sign In", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showGoogleSetupDialog = false }) {
+                    TextButton(onClick = { showGoogleConfigDialog = false }) {
                         Text("Cancel", color = TextMuted)
                     }
                 }

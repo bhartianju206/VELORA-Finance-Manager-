@@ -5,6 +5,9 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.velora.util.awaitTask
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -36,6 +39,7 @@ class AuthRepository(private val context: Context) {
     private val KEY_APP_LOCK_ENABLED = booleanPreferencesKey("auth_app_lock_enabled")
     private val KEY_HIDE_BALANCE = booleanPreferencesKey("auth_hide_balance")
     private val KEY_AUTO_BACKUP = booleanPreferencesKey("auth_auto_backup")
+    private val KEY_GOOGLE_WEB_CLIENT_ID = stringPreferencesKey("auth_google_web_client_id")
 
     val authState: Flow<AuthState> = context.dataStore.data.map { prefs ->
         val userId = prefs[KEY_USER_ID]
@@ -147,6 +151,70 @@ class AuthRepository(private val context: Context) {
         return Result.success(VeloraUser(userId, cleanEmail, name, isGoogle))
     }
 
+    suspend fun resolveWebClientId(): String? {
+        val prefs = context.dataStore.data.first()
+        val customClientId = prefs[KEY_GOOGLE_WEB_CLIENT_ID]
+        if (!customClientId.isNullOrBlank()) {
+            return customClientId.trim()
+        }
+        val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+        if (resId != 0) {
+            val resVal = context.getString(resId)
+            if (resVal.isNotBlank() && !resVal.startsWith("YOUR_")) {
+                return resVal.trim()
+            }
+        }
+        return null
+    }
+
+    suspend fun saveWebClientId(clientId: String) {
+        context.dataStore.edit { prefs ->
+            if (clientId.isBlank()) {
+                prefs.remove(KEY_GOOGLE_WEB_CLIENT_ID)
+            } else {
+                prefs[KEY_GOOGLE_WEB_CLIENT_ID] = clientId.trim()
+            }
+        }
+    }
+
+    suspend fun signInWithGoogleIdToken(idToken: String): Result<VeloraUser> {
+        return try {
+            val auth = FirebaseAuth.getInstance()
+            val credential = GoogleAuthProvider.getCredential(idToken, null)
+            val authResult = auth.signInWithCredential(credential).awaitTask()
+            val firebaseUser = authResult.user
+                ?: return Result.failure(IllegalStateException("Firebase user was null after authentication."))
+
+            val googleEmail = firebaseUser.email ?: "google-user@velora.finance"
+            val googleName = firebaseUser.displayName ?: googleEmail.substringBefore("@")
+            val firebaseUid = firebaseUser.uid
+
+            // Check if account with this email was previously registered locally, to preserve existing data association
+            val prefs = context.dataStore.data.first()
+            val usersMap = parseUsersMap(prefs[KEY_USERS_STORE])
+            val existing = usersMap[googleEmail.lowercase()]
+            val userId = if (existing != null) {
+                existing.split("|").firstOrNull() ?: firebaseUid
+            } else {
+                firebaseUid
+            }
+
+            val newStore = usersMap + (googleEmail.lowercase() to "$userId|FIREBASE_GOOGLE_AUTH|$googleName|true")
+
+            context.dataStore.edit { p ->
+                p[KEY_USERS_STORE] = serializeUsersMap(newStore)
+                p[KEY_USER_ID] = userId
+                p[KEY_USER_EMAIL] = googleEmail.lowercase()
+                p[KEY_USER_NAME] = googleName
+                p[KEY_IS_GOOGLE] = true
+            }
+
+            Result.success(VeloraUser(userId, googleEmail.lowercase(), googleName, true))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun loginWithGoogleAccount(googleEmail: String, googleName: String): Result<VeloraUser> {
         val cleanEmail = googleEmail.trim().lowercase()
         val prefs = context.dataStore.data.first()
@@ -194,6 +262,10 @@ class AuthRepository(private val context: Context) {
     }
 
     suspend fun logout() {
+        try {
+            FirebaseAuth.getInstance().signOut()
+        } catch (_: Exception) {
+        }
         context.dataStore.edit { prefs ->
             prefs.remove(KEY_USER_ID)
             prefs.remove(KEY_USER_EMAIL)
@@ -203,6 +275,10 @@ class AuthRepository(private val context: Context) {
     }
 
     suspend fun deleteAccount(): Result<String> {
+        try {
+            FirebaseAuth.getInstance().currentUser?.delete()?.awaitTask()
+        } catch (_: Exception) {
+        }
         val prefs = context.dataStore.data.first()
         val currentUserId = prefs[KEY_USER_ID] ?: return Result.failure(IllegalStateException("No logged in user"))
         val currentEmail = prefs[KEY_USER_EMAIL] ?: ""
