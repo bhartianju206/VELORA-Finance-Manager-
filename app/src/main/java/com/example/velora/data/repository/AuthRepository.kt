@@ -35,6 +35,11 @@ class AuthRepository(private val context: Context) {
     companion object {
         private const val TAG = "VeloraAuth"
         const val DEBUG_SHA1 = "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74"
+        val REGISTERED_SHA1S = setOf(
+            "2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74",
+            "3C:83:D2:49:17:75:E5:C6:55:98:6B:B9:EF:9E:2D:47:4F:DC:9E:B4",
+            "08:09:50:96:62:E0:1D:16:DC:83:30:32:38:86:93:CF:52:89:05:87"
+        )
         const val FIREBASE_PROJECT_ID = "velora-finance-manager"
         const val WEB_CLIENT_ID = "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com"
 

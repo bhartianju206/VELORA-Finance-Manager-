@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Base64
 
 plugins {
   alias(libs.plugins.android.application)
@@ -20,6 +21,16 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  // Ensure deterministic debug signing by restoring debug.keystore from debug.keystore.base64 if not present
+  val debugKeystoreFile = file("${rootDir}/debug.keystore")
+  val base64Keystore = file("${rootDir}/debug.keystore.base64")
+  if (!debugKeystoreFile.exists() && base64Keystore.exists()) {
+    try {
+      val decoded = Base64.getDecoder().decode(base64Keystore.readText().trim())
+      debugKeystoreFile.writeBytes(decoded)
+    } catch (_: Exception) {}
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

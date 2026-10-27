@@ -694,7 +694,7 @@ fun AuthScreen(
         // Real Google Sign-In & Firebase Configuration Dialog
         if (showGoogleConfigDialog) {
             val installedSha = remember { AuthRepository.getInstalledApkSha1(context) }
-            val isShaMatch = installedSha.equals(AuthRepository.DEBUG_SHA1, ignoreCase = true)
+            val isShaMatch = AuthRepository.REGISTERED_SHA1S.any { it.equals(installedSha, ignoreCase = true) }
 
             AlertDialog(
                 onDismissRequest = { showGoogleConfigDialog = false },

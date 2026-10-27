@@ -39,27 +39,19 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Restore or create debug keystore
+      - name: Restore permanent debug keystore
         run: |
           if [ -f "./debug.keystore.base64" ]; then
-            echo "Restoring official debug keystore from debug.keystore.base64..."
+            echo "Restoring permanent debug keystore from debug.keystore.base64..."
             base64 -d ./debug.keystore.base64 > ./debug.keystore
-          elif [ ! -f "./debug.keystore" ]; then
-            echo "Generating fallback debug keystore..."
-            keytool -genkeypair -v \
-              -keystore ./debug.keystore \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass android \
-              -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US"
+          elif [ -f "./debug.keystore" ]; then
+            echo "Permanent debug keystore already exists."
           else
-            echo "Debug keystore already exists."
+            echo "Error: Neither debug.keystore nor debug.keystore.base64 was found."
+            exit 1
           fi
-          echo "Verified Debug Keystore Fingerprint:"
-          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep "SHA1:" || true
+          echo "Verified Permanent Debug Keystore Fingerprints:"
+          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:" || true
 
       - name: Build Debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
