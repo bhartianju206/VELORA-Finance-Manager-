@@ -164,7 +164,7 @@ class AuthRepository(private val context: Context) {
                 return resVal.trim()
             }
         }
-        return null
+        return "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com"
     }
 
     suspend fun saveWebClientId(clientId: String) {
