@@ -1,5 +1,6 @@
 package com.example.velora.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -29,11 +30,15 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DriveFolderUpload
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
@@ -64,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +79,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.velora.backup.BackupMetadata
+import com.example.velora.backup.BackupStatus
 import com.example.velora.backup.BackupValidationResult
 import com.example.velora.data.repository.AuthState
 import com.example.velora.ui.VeloraViewModel
@@ -101,6 +108,7 @@ fun BackupSyncScreen(
     onBack: () -> Unit
 ) {
     BackHandler { onBack() }
+    val context = LocalContext.current
 
     val authState by viewModel.authState.collectAsStateWithLifecycle()
     val localBackups by viewModel.localBackups.collectAsStateWithLifecycle()
@@ -108,13 +116,20 @@ fun BackupSyncScreen(
     val lastBackup by viewModel.lastBackupTime.collectAsStateWithLifecycle()
     val driveAccessToken by viewModel.driveAccessToken.collectAsStateWithLifecycle()
 
+    // Automatic Backup states from AutoBackupManager
+    val autoBackupStatus by viewModel.autoBackupStatus.collectAsStateWithLifecycle()
+    val autoLastBackupTime by viewModel.autoLastBackupTime.collectAsStateWithLifecycle()
+    val isAutoBackupEnabled by viewModel.isAutoBackupEnabled.collectAsStateWithLifecycle()
+    val externalBackupUri by viewModel.externalBackupUri.collectAsStateWithLifecycle()
+    val autoBackupError by viewModel.autoBackupError.collectAsStateWithLifecycle()
+    val isAutoBackupProcessing by viewModel.isAutoBackupProcessing.collectAsStateWithLifecycle()
+
     var showDriveSetupDialog by remember { mutableStateOf(false) }
     var showTokenInputDialog by remember { mutableStateOf(false) }
 
-    // Pair of (raw JSON content, validation result)
+    // Pair of (raw JSON content, validation result) for instant import modal
     var backupToRestorePreview by remember { mutableStateOf<Pair<String, BackupValidationResult>?>(null) }
     var restoreMode by remember { mutableStateOf("REPLACE") }
-    var autoBackupEnabled by remember { mutableStateOf(true) }
 
     val userEmail = (authState as? AuthState.Authenticated)?.user?.email ?: "User"
 
@@ -134,6 +149,18 @@ fun BackupSyncScreen(
             viewModel.inspectBackupFromUri(uri) { validation, content ->
                 backupToRestorePreview = Pair(content, validation)
             }
+        }
+    }
+
+    val chooseExternalLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (_: Exception) {}
+            viewModel.setExternalBackupLocation(uri)
         }
     }
 
@@ -159,7 +186,7 @@ fun BackupSyncScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text("Backup & Restore", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text("Export All Data, Cloud Sync & Safe Restore", fontSize = 12.sp, color = TextSecondary)
+                        Text("Automatic Snapshots & Instant SAF Import", fontSize = 12.sp, color = TextSecondary)
                     }
                 }
 
@@ -169,69 +196,193 @@ fun BackupSyncScreen(
             }
         }
 
-        // Complete Financial Data Export & Import Card (SAF File Picker)
+        // =========================================================================
+        // 1. COMPACT AUTOMATIC BACKUP SECTION (Requirement #6)
+        // =========================================================================
         item {
             Card(
                 shape = RoundedCornerShape(22.dp),
                 colors = CardDefaults.cardColors(containerColor = AmoledCard),
-                modifier = Modifier.fillMaxWidth().testTag("export_import_all_card")
+                modifier = Modifier.fillMaxWidth().testTag("auto_backup_section")
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(EmeraldPrimary.copy(alpha = 0.2f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Upload, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
+                Column(modifier = Modifier.padding(18.dp)) {
+                    // Header & On/Off Switch
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(EmeraldPrimary.copy(alpha = 0.2f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.CloudSync, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(22.dp))
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text("Automatic Local Backup", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+                                Text("Snapshots after every financial change", fontSize = 11.sp, color = TextSecondary)
+                            }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Switch(
+                            checked = isAutoBackupEnabled,
+                            onCheckedChange = { viewModel.toggleAutoBackup(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = EmeraldPrimary,
+                                checkedTrackColor = EmeraldDark
+                            ),
+                            modifier = Modifier.testTag("auto_backup_switch")
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Backup Status Badge & Last Successful Backup Time
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Column {
-                            Text("Export & Import All Financial Data", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
-                            Text("Single portable velora_backup.json file", fontSize = 12.sp, color = EmeraldMint)
+                            Text("Backup Status", fontSize = 11.sp, color = TextMuted)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            val (badgeText, badgeBg, badgeTextColor) = when (autoBackupStatus) {
+                                BackupStatus.UP_TO_DATE -> Triple("● Up to date", EmeraldPrimary.copy(alpha = 0.2f), EmeraldMint)
+                                BackupStatus.PENDING -> Triple("● Pending sync...", WarningGold.copy(alpha = 0.2f), WarningGold)
+                                BackupStatus.FAILED -> Triple("● Backup failed", ExpenseCoral.copy(alpha = 0.2f), ExpenseCoral)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .background(badgeBg, RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    .testTag("auto_backup_status_badge")
+                            ) {
+                                Text(badgeText, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = badgeTextColor)
+                            }
+                        }
+
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("Last Successful Backup", fontSize = 11.sp, color = TextMuted)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                if (autoLastBackupTime != null) DateUtils.formatDateTime(autoLastBackupTime!!) else "None yet",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (autoLastBackupTime != null) TextPrimary else TextMuted
+                            )
                         }
                     }
 
+                    // User-Selected External Backup Location
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        "Includes all income & expense transactions, account transfers, accounts & opening balances, Udhaar debts & partial repayments, custom categories, budgets, and recurring schedules with full balance integrity.",
-                        fontSize = 12.sp,
-                        color = TextSecondary,
-                        lineHeight = 16.sp
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(AmoledSurface, RoundedCornerShape(10.dp))
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = if (externalBackupUri != null) EmeraldMint else TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("External Document Location", fontSize = 10.sp, color = TextMuted)
+                            Text(
+                                if (externalBackupUri != null) "Linked via Storage Access Framework" else "Not configured (Private storage only)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (externalBackupUri != null) EmeraldMint else TextSecondary,
+                                maxLines = 1
+                            )
+                        }
+                        if (externalBackupUri != null) {
+                            TextButton(onClick = { viewModel.setExternalBackupLocation(null) }) {
+                                Text("Disconnect", fontSize = 10.sp, color = ExpenseCoral)
+                            }
+                        }
+                    }
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    if (autoBackupError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("⚠️ $autoBackupError", fontSize = 11.sp, color = ExpenseCoral)
+                    }
 
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Action buttons: Export Current Backup, Import Backup, Choose Location
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
                             onClick = {
                                 val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-                                exportJsonLauncher.launch("velora_backup_$dateStr.json")
+                                exportJsonLauncher.launch("Velora_AutoBackup_$dateStr.json")
                             },
-                            modifier = Modifier.weight(1f).testTag("export_all_data_btn"),
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
-                            enabled = !isBackupLoading
+                            modifier = Modifier.weight(1f).testTag("export_current_backup_btn"),
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
                         ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF003822))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Export All Data", color = Color(0xFF003822), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color(0xFF003822))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Export Backup", color = Color(0xFF003822), fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         }
 
-                        OutlinedButton(
+                        Button(
                             onClick = {
                                 importJsonLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
                             },
-                            modifier = Modifier.weight(1f).testTag("import_all_data_btn"),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldMint),
-                            enabled = !isBackupLoading
+                            modifier = Modifier.weight(1f).testTag("instant_import_backup_btn"),
+                            colors = ButtonDefaults.buttonColors(containerColor = AmoledBorder)
                         ) {
-                            Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp), tint = EmeraldMint)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Import Backup", color = EmeraldMint, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(14.dp), tint = EmeraldMint)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Import Backup", color = EmeraldMint, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                chooseExternalLocationLauncher.launch("Velora_AutoBackup.json")
+                            },
+                            modifier = Modifier.weight(1f).testTag("choose_backup_location_btn"),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        ) {
+                            Icon(Icons.Default.DriveFolderUpload, contentDescription = null, modifier = Modifier.size(14.dp), tint = EmeraldMint)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                if (externalBackupUri != null) "Update Location" else "Choose Location",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = { viewModel.triggerManualAutoBackup() },
+                            modifier = Modifier.weight(1f).testTag("manual_backup_now_btn"),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldMint),
+                            enabled = !isAutoBackupProcessing
+                        ) {
+                            if (isAutoBackupProcessing) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), color = EmeraldMint)
+                            } else {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp), tint = EmeraldMint)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Snapshot Now", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     }
                 }
@@ -258,14 +409,14 @@ fun BackupSyncScreen(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column {
                         Text(
-                            "Tamper-Proof SHA-256 Backups",
+                            "Atomic Replacement & Safety Rollback",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            "Every Velora backup includes cryptographic checksums and automatic local safety snapshots before any restore.",
+                            "Snapshots write to temporary storage and validate before replacing Velora_AutoBackup.json, guaranteeing zero corruption.",
                             fontSize = 11.sp,
                             color = TextSecondary,
                             lineHeight = 15.sp
@@ -346,69 +497,6 @@ fun BackupSyncScreen(
             }
         }
 
-        // Quick Snapshot Action Card
-        item {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = AmoledCard),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Last Saved Snapshot", fontSize = 12.sp, color = TextSecondary)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                if (lastBackup != null) DateUtils.formatDateTime(lastBackup!!) else "No snapshots yet",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (lastBackup != null) EmeraldMint else TextMuted
-                            )
-                        }
-
-                        Button(
-                            onClick = { viewModel.performBackup(driveAccessToken) },
-                            enabled = !isBackupLoading,
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
-                            modifier = Modifier.testTag("backup_now_button")
-                        ) {
-                            if (isBackupLoading) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color(0xFF003822))
-                            } else {
-                                Text("Snapshot Now", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Automatic Daily Snapshot", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                            Text("Captures local snapshots during daily usage", fontSize = 11.sp, color = TextMuted)
-                        }
-
-                        Switch(
-                            checked = autoBackupEnabled,
-                            onCheckedChange = { autoBackupEnabled = it },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = EmeraldPrimary,
-                                checkedTrackColor = EmeraldDark
-                            )
-                        )
-                    }
-                }
-            }
-        }
-
         // Available Backups List
         item {
             Text("LOCAL BACKUP ARCHIVE (${localBackups.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EmeraldMint, letterSpacing = 1.sp)
@@ -422,7 +510,7 @@ fun BackupSyncScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Box(modifier = Modifier.padding(20.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("No saved backup files yet. Use 'Export All Data' or 'Snapshot Now' above.", color = TextSecondary, fontSize = 13.sp)
+                        Text("No manual archives yet. Automatic backup is maintained in Velora_AutoBackup.json.", color = TextSecondary, fontSize = 13.sp)
                     }
                 }
             }
@@ -487,7 +575,7 @@ fun BackupSyncScreen(
                                 "3. Configure OAuth Consent Screen\n" +
                                 "4. Add Android OAuth Client with package name: com.aistudio.velora.kxmpzq\n" +
                                 "5. Velora isolates backups so other apps cannot access them.\n\n" +
-                                "Offline local snapshots and JSON exports are fully functional and store the identical schema with SHA-256 checksum integrity verification.",
+                                "Offline local Velora_AutoBackup.json is maintained automatically after every database change with SHA-256 checksum integrity verification.",
                         fontSize = 12.sp,
                         color = TextSecondary
                     )
@@ -560,7 +648,7 @@ fun BackupSyncScreen(
         }
     }
 
-    // Restore Safety Preview & Confirmation Modal
+    // Instant Restore Safety Preview & Confirmation Modal (Requirement #4)
     if (backupToRestorePreview != null) {
         val (content, validation) = backupToRestorePreview!!
 
@@ -626,9 +714,9 @@ fun BackupSyncScreen(
                                     .testTag("mode_replace_btn")
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
-                                    Text("Replace All Data", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "REPLACE") ExpenseCoral else TextPrimary)
+                                    Text("Replace Existing", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "REPLACE") ExpenseCoral else TextPrimary)
                                     Spacer(modifier = Modifier.height(2.dp))
-                                    Text("Safe overwrite with rollback protection", fontSize = 10.sp, color = TextMuted)
+                                    Text("Overwrites with rollback protection", fontSize = 10.sp, color = TextMuted)
                                 }
                             }
 
@@ -650,7 +738,7 @@ fun BackupSyncScreen(
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     Text("Merge Data", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "MERGE") EmeraldMint else TextPrimary)
                                     Spacer(modifier = Modifier.height(2.dp))
-                                    Text("Keep existing, skip duplicates", fontSize = 10.sp, color = TextMuted)
+                                    Text("Preserves existing records", fontSize = 10.sp, color = TextMuted)
                                 }
                             }
                         }

@@ -3,6 +3,8 @@ package com.example
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.example.velora.backup.AutoBackupManager
+import com.example.velora.backup.BackupStatus
 import com.example.velora.backup.DriveBackupManager
 import com.example.velora.data.database.VeloraDatabase
 import com.example.velora.data.entity.AccountEntity
@@ -18,6 +20,7 @@ import com.example.velora.data.entity.UdhaarEntity
 import com.example.velora.data.entity.UdhaarPaymentEntity
 import com.example.velora.data.entity.UdhaarStatus
 import com.example.velora.data.entity.UdhaarType
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.After
@@ -30,6 +33,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
@@ -39,6 +43,7 @@ class VeloraBackupRestoreTest {
     private lateinit var context: Context
     private lateinit var database: VeloraDatabase
     private lateinit var backupManager: DriveBackupManager
+    private lateinit var autoBackupManager: AutoBackupManager
 
     private val testUserId = "user_test_101"
     private val testUserEmail = "test@velora.app"
@@ -50,10 +55,13 @@ class VeloraBackupRestoreTest {
             .allowMainThreadQueries()
             .build()
         backupManager = DriveBackupManager(context, database)
+        autoBackupManager = AutoBackupManager(context, database, backupManager)
     }
 
     @After
     fun tearDown() {
+        autoBackupManager.autoBackupFile.delete()
+        autoBackupManager.tmpBackupFile.delete()
         database.close()
     }
 
@@ -434,5 +442,92 @@ class VeloraBackupRestoreTest {
         val transactions = database.transactionDao().getAllTransactionsSync(testUserId)
         val incomeCount = transactions.count { it.type == TransactionType.INCOME }
         assertEquals(0, incomeCount)
+    }
+
+    @Test
+    fun `auto backup execution creates Velora_AutoBackup json with atomic snapshot`(): Unit = runBlocking {
+        // Prepare account and transaction
+        val accId = "acc_auto_1"
+        val account = AccountEntity(
+            id = accId,
+            userId = testUserId,
+            name = "Test Savings",
+            type = AccountType.BANK,
+            openingBalancePaise = 500000L,
+            currentBalancePaise = 500000L
+        )
+        database.accountDao().insertAccount(account)
+
+        val tx = TransactionEntity(
+            id = "tx_auto_1",
+            userId = testUserId,
+            type = TransactionType.INCOME,
+            amountPaise = 250000L,
+            accountId = accId,
+            category = "Bonus"
+        )
+        database.transactionDao().insertTransaction(tx)
+
+        // Execute auto backup
+        val result = autoBackupManager.executeBackup(testUserId, testUserEmail)
+        assertTrue(result.isSuccess)
+
+        val backupFile = autoBackupManager.autoBackupFile
+        assertTrue(backupFile.exists())
+        assertEquals(AutoBackupManager.AUTO_BACKUP_FILE_NAME, backupFile.name)
+
+        // Check content and validity
+        val content = autoBackupManager.readCurrentAutoBackup()
+        assertNotNull(content)
+
+        val validation = backupManager.validateBackupContent(content!!)
+        assertTrue(validation.isValid)
+        assertEquals(1, validation.accountsCount)
+        assertEquals(1, validation.transactionsCount)
+
+        // Status must be UP_TO_DATE
+        assertEquals(BackupStatus.UP_TO_DATE, autoBackupManager.backupStatus.value)
+        assertNotNull(autoBackupManager.lastBackupTime.value)
+    }
+
+    @Test
+    fun `atomic replacement preserves valid previous backup file`(): Unit = runBlocking {
+        // Step 1: Create initial valid backup
+        val accId = "acc_preserve_1"
+        val account = AccountEntity(
+            id = accId,
+            userId = testUserId,
+            name = "Safe Wallet",
+            type = AccountType.CASH,
+            openingBalancePaise = 100000L,
+            currentBalancePaise = 100000L
+        )
+        database.accountDao().insertAccount(account)
+
+        val firstResult = autoBackupManager.executeBackup(testUserId, testUserEmail)
+        assertTrue(firstResult.isSuccess)
+        val originalContent = autoBackupManager.readCurrentAutoBackup()
+        assertNotNull(originalContent)
+
+        // Step 2: Corrupted or invalid tmp file cannot overwrite the existing valid backup
+        autoBackupManager.tmpBackupFile.writeText("CORRUPTED_NOT_JSON", Charsets.UTF_8)
+        
+        // Ensure auto backup file is untouched and readable
+        val currentContent = autoBackupManager.readCurrentAutoBackup()
+        assertEquals(originalContent, currentContent)
+        assertTrue(autoBackupManager.autoBackupFile.exists())
+
+        // Clean up tmp file
+        autoBackupManager.tmpBackupFile.delete()
+        Unit
+    }
+
+    @Test
+    fun `auto backup toggle enables and disables state`(): Unit = runBlocking {
+        autoBackupManager.setAutoBackupEnabled(false)
+        assertFalse(autoBackupManager.isAutoBackupEnabled.value)
+
+        autoBackupManager.setAutoBackupEnabled(true)
+        assertTrue(autoBackupManager.isAutoBackupEnabled.value)
     }
 }

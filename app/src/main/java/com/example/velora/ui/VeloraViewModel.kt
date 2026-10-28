@@ -4,7 +4,9 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.velora.backup.AutoBackupManager
 import com.example.velora.backup.BackupMetadata
+import com.example.velora.backup.BackupStatus
 import com.example.velora.backup.BackupValidationResult
 import com.example.velora.backup.CsvImportPreview
 import com.example.velora.backup.CsvManager
@@ -57,6 +59,7 @@ class VeloraViewModel(application: Application) : AndroidViewModel(application) 
     val repository = VeloraRepository(database)
     val authRepository = AuthRepository(application)
     val driveBackupManager = DriveBackupManager(application, database)
+    val autoBackupManager = AutoBackupManager(application, database, driveBackupManager)
     val csvManager = CsvManager(application, database)
 
     val authState: StateFlow<AuthState> = authRepository.authState
@@ -64,6 +67,13 @@ class VeloraViewModel(application: Application) : AndroidViewModel(application) 
 
     val isBalanceHidden: StateFlow<Boolean> = authRepository.hideBalancePreference
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val autoBackupStatus: StateFlow<BackupStatus> = autoBackupManager.backupStatus
+    val autoLastBackupTime: StateFlow<Long?> = autoBackupManager.lastBackupTime
+    val isAutoBackupEnabled: StateFlow<Boolean> = autoBackupManager.isAutoBackupEnabled
+    val externalBackupUri: StateFlow<String?> = autoBackupManager.externalBackupUri
+    val autoBackupError: StateFlow<String?> = autoBackupManager.lastErrorMessage
+    val isAutoBackupProcessing: StateFlow<Boolean> = autoBackupManager.isProcessing
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -97,11 +107,18 @@ class VeloraViewModel(application: Application) : AndroidViewModel(application) 
     val legacyDemoDismissed: StateFlow<Boolean> = _legacyDemoDismissed.asStateFlow()
 
     init {
+        // Connect repository mutation hook to automatic backup manager
+        repository.onDatabaseChanged = { userId ->
+            val userEmail = (authState.value as? AuthState.Authenticated)?.user?.email ?: "user@velora.app"
+            autoBackupManager.onDatabaseChanged(userId, userEmail)
+        }
+
         viewModelScope.launch {
             authState.collect { state ->
                 if (state is AuthState.Authenticated) {
                     repository.ensureDefaultAccounts(state.user.id)
                     loadBackups()
+                    autoBackupManager.checkAndRetryPendingBackup(state.user.id, state.user.email)
                 } else {
                     _isAppUnlocked.value = false
                 }
@@ -555,6 +572,7 @@ class VeloraViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         _userMessage.emit(msg)
                         loadBackups()
+                        autoBackupManager.onDatabaseChanged(user.id, user.email)
                         onComplete(true, msg)
                     }
                     .onFailure {
@@ -576,6 +594,35 @@ class VeloraViewModel(application: Application) : AndroidViewModel(application) 
             restoreBackupContent(content, mode, onComplete)
         } catch (e: Exception) {
             onComplete(false, e.localizedMessage ?: "Failed to read local file")
+        }
+    }
+
+    fun toggleAutoBackup(enabled: Boolean) {
+        val user = (authState.value as? AuthState.Authenticated)?.user
+        autoBackupManager.setAutoBackupEnabled(enabled, user?.id, user?.email)
+    }
+
+    fun setExternalBackupLocation(uri: Uri?) {
+        val user = (authState.value as? AuthState.Authenticated)?.user
+        autoBackupManager.setExternalBackupUri(uri?.toString(), user?.id, user?.email)
+        if (uri != null) {
+            viewModelScope.launch { _userMessage.emit("External backup location linked!") }
+        } else {
+            viewModelScope.launch { _userMessage.emit("External backup location disconnected") }
+        }
+    }
+
+    fun triggerManualAutoBackup() {
+        val user = (authState.value as? AuthState.Authenticated)?.user ?: return
+        viewModelScope.launch {
+            autoBackupManager.executeBackup(user.id, user.email)
+                .onSuccess {
+                    _userMessage.emit("Backup updated: ${it.name}")
+                    loadBackups()
+                }
+                .onFailure {
+                    _userMessage.emit("Backup failed: ${it.localizedMessage}")
+                }
         }
     }
 
