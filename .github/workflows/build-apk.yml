@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   build:
+    name: Build & Release Debug APK
     runs-on: ubuntu-latest
 
     steps:
@@ -39,28 +40,50 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Create temporary debug keystore
+      - name: Restore persistent debug keystore
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ ! -f ./debug.keystore ]; then
-            echo "Creating temporary debug keystore..."
-            keytool -genkeypair -v \
-              -keystore ./debug.keystore \
-              -alias androiddebugkey \
-              -keypass android \
-              -storepass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-            echo "Temporary debug keystore created successfully."
+          echo "Checking for persistent debug keystore to ensure deterministic signing..."
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "Restoring permanent debug keystore from GitHub Secret DEBUG_KEYSTORE_BASE64..."
+            echo "$DEBUG_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > ./debug.keystore
+          elif [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring permanent debug keystore from repository ./debug.keystore.base64..."
+            tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
+          elif [ -f "./debug.keystore" ]; then
+            echo "Permanent debug keystore already exists in repository."
           else
-            echo "Debug keystore already exists."
+            echo "::error::No persistent debug keystore was found!"
+            echo "=========================================================================="
+            echo "Deterministic debug signing requires the persistent Velora keystore."
+            echo "Generating a random key is disabled because it breaks Google Sign-In SHA-1."
+            echo ""
+            echo "To fix this:"
+            echo "1. Go to your GitHub repository -> Settings -> Secrets and variables -> Actions"
+            echo "2. Click 'New repository secret'"
+            echo "3. Name: DEBUG_KEYSTORE_BASE64"
+            echo "4. Value: Paste the base64 string provided in the Velora instructions."
+            echo "=========================================================================="
+            exit 1
           fi
 
+          if [ ! -s "./debug.keystore" ]; then
+            echo "Error: ./debug.keystore was created but is empty or invalid."
+            exit 1
+          fi
+
+          echo "=================================================="
+          echo "Verified Debug Keystore Fingerprints:"
+          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:"
+          echo "=================================================="
+
       - name: Build debug APK
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Verify APK exists
+      - name: Verify APK exists and check signing certificate
         run: |
           APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
           if [ ! -f "$APK_PATH" ]; then
@@ -77,6 +100,17 @@ jobs:
           fi
           echo "Verified debug APK artifact exists and is non-empty:"
           ls -lh "$APK_PATH"
+
+          echo "=================================================="
+          echo "Verifying APK signing certificate with apksigner:"
+          APKSIGNER=$(find ${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools -name apksigner 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ] && [ -x "$APKSIGNER" ]; then
+            $APKSIGNER verify --print-certs "$APK_PATH"
+          else
+            echo "apksigner not found in SDK, checking with keytool..."
+            keytool -printcert -jarfile "$APK_PATH" 2>/dev/null || true
+          fi
+          echo "=================================================="
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -102,11 +136,13 @@ jobs:
           TAG_NAME="debug-apk-build-${{ github.run_number }}-${{ github.run_attempt }}"
           RELEASE_TITLE="Debug APK Build #${{ github.run_number }}"
           RELEASE_NOTES="### Velora Debug APK Build
-          - **Run Number**: #${{ github.run_number }}
-          - **Run Attempt**: ${{ github.run_attempt }}
+          - **Run Number**: #${{ github.run_number }} (attempt ${{ github.run_attempt }})
           - **Commit SHA**: ${{ github.sha }}
-          - **Signing**: Signed with temporary debug keystore for development and testing.
-          - **Notice**: This build is a debug artifact and is not intended for the Google Play Store."
+          - **Package Name**: \`com.aistudio.velora.kxmpzq\`
+          - **Signing Certificate SHA-1**: \`2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74\`
+          - **Signing Certificate SHA-256**: \`1F:AA:D1:97:44:62:65:60:3F:FA:38:74:F5:E5:79:9E:AE:42:4E:49:1A:9A:D8:EF:24:C0:C8:91:BF:4C:71:11\`
+          - **Firebase Status**: Matches registered Firebase Android certificate.
+          - **Notice**: Debug build for development and testing; not intended for Google Play Store production release."
 
           echo "Publishing release: $TAG_NAME ($RELEASE_TITLE)"
           gh release create "$TAG_NAME" "${{ steps.prepare_asset.outputs.asset_path }}" \
@@ -135,6 +171,7 @@ jobs:
           echo "- **Repository**: \`${GITHUB_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Release Tag**: \`${TAG_NAME}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Artifact**: \`app-debug.apk\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Verified Signing SHA-1**: \`2D:6D:3E:FB:A6:66:BA:F0:0A:73:66:A3:4F:B8:7A:E2:87:7F:36:74\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.publish_release.outcome }}" = "success" ]; then
             echo "- **Release Status**: Published successfully" >> "$GITHUB_STEP_SUMMARY"
           else

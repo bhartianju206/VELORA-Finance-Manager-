@@ -694,7 +694,8 @@ fun AuthScreen(
         // Real Google Sign-In & Firebase Configuration Dialog
         if (showGoogleConfigDialog) {
             val installedSha = remember { AuthRepository.getInstalledApkSha1(context) }
-            val isShaMatch = AuthRepository.REGISTERED_SHA1S.any { it.equals(installedSha, ignoreCase = true) }
+            val configInfo = remember { AuthRepository.getFirebaseConfigInfo(context) }
+            val isShaMatch = configInfo.registeredSha1s.any { it.equals(installedSha, ignoreCase = true) }
 
             AlertDialog(
                 onDismissRequest = { showGoogleConfigDialog = false },
@@ -708,8 +709,11 @@ fun AuthScreen(
                         )
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        Text("Firebase Project: ${AuthRepository.FIREBASE_PROJECT_ID}", color = EmeraldMint, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        Text("Package Name: ${context.packageName}", color = TextMuted, fontSize = 12.sp)
+                        Text("Firebase Project: ${configInfo.projectId}", color = EmeraldMint, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Text("Config Package: ${configInfo.packageName}", color = TextMuted, fontSize = 12.sp)
+                        if (configInfo.packageName != context.packageName) {
+                            Text("⚠️ Installed Package (${context.packageName}) differs from config!", color = ExpenseCoral, fontSize = 11.sp)
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
                         Text("Runtime APK Signature SHA-1:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
@@ -732,7 +736,7 @@ fun AuthScreen(
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    if (isShaMatch) "✓ MATCHES Firebase Registered Key" else "⚠️ Key mismatch! Must match Firebase SHA-1.",
+                                    if (isShaMatch) "✓ MATCHES Registered Firebase Certificate" else "⚠️ Key mismatch! Installed APK is not signed with a registered Firebase key.",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = if (isShaMatch) EmeraldMint else ExpenseCoral
@@ -741,7 +745,7 @@ fun AuthScreen(
                         }
 
                         Spacer(modifier = Modifier.height(10.dp))
-                        Text("Firebase Registered SHA-1:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Text("Registered SHA-1 Fingerprints (google-services.json):", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(4.dp))
                         Card(
                             colors = CardDefaults.cardColors(containerColor = AmoledBackground),
@@ -749,12 +753,28 @@ fun AuthScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text(
-                                    AuthRepository.DEBUG_SHA1,
-                                    fontSize = 11.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    color = EmeraldMint
-                                )
+                                configInfo.registeredSha1s.forEach { sha ->
+                                    val isCurrentSha = sha.equals(installedSha, ignoreCase = true)
+                                    val isPrimary = sha.equals(AuthRepository.DEBUG_SHA1, ignoreCase = true)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            sha,
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            color = if (isCurrentSha) EmeraldMint else if (isPrimary) EmeraldPrimary else TextSecondary,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (isCurrentSha) {
+                                            Text(" (ACTIVE)", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = EmeraldMint)
+                                        } else if (isPrimary) {
+                                            Text(" (DEFAULT)", fontSize = 10.sp, color = EmeraldPrimary)
+                                        }
+                                    }
+                                }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Button(
                                     onClick = {
@@ -766,7 +786,7 @@ fun AuthScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = ButtonDefaults.buttonColors(containerColor = if (isCopiedSha) EmeraldDark else EmeraldPrimary)
                                 ) {
-                                    Text(if (isCopiedSha) "✓ SHA-1 Copied!" else "Copy SHA-1 Fingerprint", fontSize = 12.sp)
+                                    Text(if (isCopiedSha) "✓ Default SHA-1 Copied!" else "Copy Default SHA-1 Fingerprint", fontSize = 12.sp)
                                 }
                             }
                         }

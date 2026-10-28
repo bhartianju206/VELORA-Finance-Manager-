@@ -30,6 +30,13 @@ sealed interface AuthState {
     data class Authenticated(val user: VeloraUser, val isLocked: Boolean = false) : AuthState
 }
 
+data class FirebaseConfigInfo(
+    val projectId: String,
+    val packageName: String,
+    val webClientId: String,
+    val registeredSha1s: List<String>
+)
+
 class AuthRepository(private val context: Context) {
 
     companion object {
@@ -42,6 +49,60 @@ class AuthRepository(private val context: Context) {
         )
         const val FIREBASE_PROJECT_ID = "velora-finance-manager"
         const val WEB_CLIENT_ID = "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com"
+
+        fun getFirebaseConfigInfo(context: Context): FirebaseConfigInfo {
+            return try {
+                val jsonString = context.assets.open("google-services.json").bufferedReader().use { it.readText() }
+                val root = org.json.JSONObject(jsonString)
+                val projectInfo = root.optJSONObject("project_info")
+                val projectId = projectInfo?.optString("project_id") ?: FIREBASE_PROJECT_ID
+                val clients = root.optJSONArray("client")
+                val client = clients?.optJSONObject(0)
+                val clientInfo = client?.optJSONObject("client_info")
+                val androidClientInfo = clientInfo?.optJSONObject("android_client_info")
+                val pkgName = androidClientInfo?.optString("package_name") ?: context.packageName
+
+                val shaList = mutableListOf<String>()
+                var foundWebClientId = WEB_CLIENT_ID
+
+                val oauthClients = client?.optJSONArray("oauth_client")
+                if (oauthClients != null) {
+                    for (i in 0 until oauthClients.length()) {
+                        val oauthObj = oauthClients.optJSONObject(i) ?: continue
+                        val clientType = oauthObj.optInt("client_type")
+                        if (clientType == 3) {
+                            val cId = oauthObj.optString("client_id")
+                            if (!cId.isNullOrBlank()) foundWebClientId = cId
+                        } else if (clientType == 1) {
+                            val androidInfo = oauthObj.optJSONObject("android_info")
+                            val rawHash = androidInfo?.optString("certificate_hash")
+                            if (!rawHash.isNullOrBlank()) {
+                                val formatted = if (rawHash.contains(":")) {
+                                    rawHash.uppercase()
+                                } else {
+                                    rawHash.chunked(2).joinToString(":").uppercase()
+                                }
+                                if (!shaList.contains(formatted)) {
+                                    shaList.add(formatted)
+                                }
+                            }
+                        }
+                    }
+                }
+                if (shaList.isEmpty()) {
+                    shaList.addAll(REGISTERED_SHA1S)
+                }
+                FirebaseConfigInfo(projectId, pkgName, foundWebClientId, shaList)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not load google-services.json from assets: ${e.message}")
+                FirebaseConfigInfo(
+                    projectId = FIREBASE_PROJECT_ID,
+                    packageName = context.packageName,
+                    webClientId = WEB_CLIENT_ID,
+                    registeredSha1s = REGISTERED_SHA1S.toList()
+                )
+            }
+        }
 
         fun getInstalledApkSha1(context: Context): String {
             return try {
@@ -210,8 +271,9 @@ class AuthRepository(private val context: Context) {
                 return resVal.trim()
             }
         }
-        Log.d(TAG, "Using bundled default web client ID: $WEB_CLIENT_ID")
-        return WEB_CLIENT_ID
+        val parsedConfig = getFirebaseConfigInfo(context)
+        Log.d(TAG, "Using parsed config web client ID: ${parsedConfig.webClientId}")
+        return parsedConfig.webClientId
     }
 
     suspend fun saveWebClientId(clientId: String) {
