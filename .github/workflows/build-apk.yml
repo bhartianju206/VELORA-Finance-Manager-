@@ -45,30 +45,30 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Create temporary debug keystore
+        env:
+          SECRET_KEYSTORE: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           if [ -f "./debug.keystore" ]; then
             echo "./debug.keystore already exists."
           elif [ -f "./debug.keystore.base64" ]; then
             echo "Restoring ./debug.keystore from ./debug.keystore.base64..."
             tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
+          elif [ -n "$SECRET_KEYSTORE" ]; then
+            echo "Restoring ./debug.keystore from GitHub Secret DEBUG_KEYSTORE_BASE64..."
+            echo "$SECRET_KEYSTORE" | tr -d '\r\n ' | base64 -d > ./debug.keystore
           else
-            echo "Generating temporary debug keystore with keytool..."
-            keytool -genkeypair -v \
-              -keystore ./debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+            echo "Restoring permanent Velora debug keystore..."
+            echo "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" | tr -d '\r\n ' | base64 -d > ./debug.keystore
           fi
 
           if [ ! -f "./debug.keystore" ] || [ ! -s "./debug.keystore" ]; then
             echo "Error: ./debug.keystore does not exist or is empty."
             exit 1
           fi
-          echo "Keystore verified successfully."
+          echo "=================================================="
+          echo "Verified Debug Keystore Fingerprints:"
+          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:"
+          echo "=================================================="
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
