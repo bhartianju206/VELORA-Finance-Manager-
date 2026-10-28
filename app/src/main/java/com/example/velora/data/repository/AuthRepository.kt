@@ -8,8 +8,10 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.velora.util.awaitTask
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
+import org.json.JSONObject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -49,7 +51,80 @@ class AuthRepository(private val context: Context) {
             "08:09:50:96:62:E0:1D:16:DC:83:30:32:38:86:93:CF:52:89:05:87"
         )
         const val FIREBASE_PROJECT_ID = "velora-finance-manager"
+        const val FIREBASE_PROJECT_NUMBER = "675344395387"
+        const val FIREBASE_STORAGE_BUCKET = "velora-finance-manager.firebasestorage.app"
+        const val FIREBASE_APP_ID = "1:675344395387:android:32f8c582f4f2288cc0c6de"
+        const val FIREBASE_API_KEY = "AIzaSyBJl24vuSonX_sDYBdF6cOdqpYh9PeRI8c"
         const val WEB_CLIENT_ID = "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com"
+
+        @Synchronized
+        fun ensureFirebaseInitialized(context: Context): Boolean {
+            val appContext = context.applicationContext ?: context
+            if (FirebaseApp.getApps(appContext).isNotEmpty()) {
+                return true
+            }
+
+            // 1. Attempt standard automatic initialization from resources
+            try {
+                val autoApp = FirebaseApp.initializeApp(appContext)
+                if (autoApp != null) {
+                    Log.i(TAG, "✓ FirebaseApp successfully initialized via resources")
+                    return true
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Automatic FirebaseApp.initializeApp(Context) threw: ${e.message}")
+            }
+
+            // 2. Attempt explicit programmatic initialization from assets/google-services.json
+            try {
+                val jsonString = appContext.assets.open("google-services.json").bufferedReader().use { it.readText() }
+                val root = JSONObject(jsonString)
+                val projectInfo = root.optJSONObject("project_info")
+                val projectId = projectInfo?.optString("project_id") ?: FIREBASE_PROJECT_ID
+                val projectNumber = projectInfo?.optString("project_number") ?: FIREBASE_PROJECT_NUMBER
+                val storageBucket = projectInfo?.optString("storage_bucket") ?: FIREBASE_STORAGE_BUCKET
+
+                val clients = root.optJSONArray("client")
+                val client = clients?.optJSONObject(0)
+                val clientInfo = client?.optJSONObject("client_info")
+                val appId = clientInfo?.optString("mobilesdk_app_id") ?: FIREBASE_APP_ID
+
+                val apiKeys = client?.optJSONArray("api_key")
+                val apiKey = apiKeys?.optJSONObject(0)?.optString("current_key") ?: FIREBASE_API_KEY
+
+                val options = FirebaseOptions.Builder()
+                    .setApplicationId(appId)
+                    .setApiKey(apiKey)
+                    .setProjectId(projectId)
+                    .setStorageBucket(storageBucket)
+                    .setGcmSenderId(projectNumber)
+                    .build()
+
+                FirebaseApp.initializeApp(appContext, options)
+                Log.i(TAG, "✓ FirebaseApp explicitly initialized from asset config (Project: $projectId)")
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Asset-based Firebase initialization failed: ${e.message}")
+            }
+
+            // 3. Fallback to hardcoded configuration options
+            try {
+                val fallbackOptions = FirebaseOptions.Builder()
+                    .setApplicationId(FIREBASE_APP_ID)
+                    .setApiKey(FIREBASE_API_KEY)
+                    .setProjectId(FIREBASE_PROJECT_ID)
+                    .setStorageBucket(FIREBASE_STORAGE_BUCKET)
+                    .setGcmSenderId(FIREBASE_PROJECT_NUMBER)
+                    .build()
+
+                FirebaseApp.initializeApp(appContext, fallbackOptions)
+                Log.i(TAG, "✓ FirebaseApp initialized with fallback options")
+                return true
+            } catch (e: Exception) {
+                Log.e(TAG, "All Firebase initialization attempts failed: ${e.message}", e)
+                return false
+            }
+        }
 
         fun getFirebaseConfigInfo(context: Context): FirebaseConfigInfo {
             return try {
@@ -287,11 +362,15 @@ class AuthRepository(private val context: Context) {
         }
     }
 
+    fun ensureFirebaseInitialized(): Boolean = Companion.ensureFirebaseInitialized(context)
+
     suspend fun signInWithGoogleIdToken(idToken: String): Result<VeloraUser> {
         return try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                Log.i(TAG, "Initializing FirebaseApp before sign-in...")
-                FirebaseApp.initializeApp(context)
+            val initialized = ensureFirebaseInitialized(context)
+            if (!initialized || FirebaseApp.getApps(context).isEmpty()) {
+                val err = "Default FirebaseApp is not initialized in this process. Please check Firebase configuration."
+                Log.e(TAG, err)
+                return Result.failure(IllegalStateException(err))
             }
             val auth = FirebaseAuth.getInstance()
             Log.d(TAG, "Exchanging Google ID token (length=${idToken.length}) with Firebase signInWithCredential...")
@@ -382,7 +461,9 @@ class AuthRepository(private val context: Context) {
 
     suspend fun logout() {
         try {
-            FirebaseAuth.getInstance().signOut()
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                FirebaseAuth.getInstance().signOut()
+            }
         } catch (_: Exception) {
         }
         context.dataStore.edit { prefs ->
@@ -395,7 +476,9 @@ class AuthRepository(private val context: Context) {
 
     suspend fun deleteAccount(): Result<String> {
         try {
-            FirebaseAuth.getInstance().currentUser?.delete()?.awaitTask()
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                FirebaseAuth.getInstance().currentUser?.delete()?.awaitTask()
+            }
         } catch (_: Exception) {
         }
         val prefs = context.dataStore.data.first()

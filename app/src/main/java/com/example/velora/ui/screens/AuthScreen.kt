@@ -123,7 +123,8 @@ fun AuthScreen(
         scope.launch {
             try {
                 val cleanClientId = clientId.trim()
-                Log.i("VeloraAuth", "1/4: Initiating Google Sign-In with serverClientId=$cleanClientId")
+                Log.i("VeloraAuth", "1/4: Ensuring FirebaseApp initialized and initiating Google Sign-In with serverClientId=$cleanClientId")
+                authRepository.ensureFirebaseInitialized()
                 val credentialManager = CredentialManager.create(context)
 
                 val googleIdOption = GetGoogleIdOption.Builder()

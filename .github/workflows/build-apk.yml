@@ -70,6 +70,18 @@ jobs:
           keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1:|SHA256:"
           echo "=================================================="
 
+      - name: Verify Google Services configuration
+        run: |
+          if [ ! -f "app/google-services.json" ] && [ -f "app/src/main/assets/google-services.json" ]; then
+            echo "Restoring app/google-services.json from assets..."
+            cp "app/src/main/assets/google-services.json" "app/google-services.json"
+          fi
+          if [ -f "app/google-services.json" ]; then
+            echo "✓ Verified app/google-services.json exists."
+          else
+            echo "::warning::app/google-services.json not found before build."
+          fi
+
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace --no-daemon
 

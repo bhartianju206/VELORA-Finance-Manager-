@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "675344395387",
+    "project_id": "velora-finance-manager",
+    "storage_bucket": "velora-finance-manager.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:675344395387:android:32f8c582f4f2288cc0c6de",
+        "android_client_info": {
+          "package_name": "com.aistudio.velora.kxmpzq"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "675344395387-49oj2hkogop6rq7sq6gdbonjg0iv31f2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.velora.kxmpzq",
+            "certificate_hash": "2d6d3efba666baf00a7366a34fb87ae2877f3674"
+          }
+        },
+        {
+          "client_id": "675344395387-k746hb8b6i3d6lept05n24ed2tnm705d.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.velora.kxmpzq",
+            "certificate_hash": "5c0c8577ed69b1d1b591ad2591f6f45d09ae762a"
+          }
+        },
+        {
+          "client_id": "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBJl24vuSonX_sDYBdF6cOdqpYh9PeRI8c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "675344395387-9l7v727lcq2u56udcm5m0du6pntf1rcv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
