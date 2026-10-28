@@ -1,6 +1,7 @@
 package com.example.velora.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.velora.backup.BackupMetadata
@@ -490,24 +491,91 @@ class VeloraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun restoreBackupFile(file: File, mode: String = "REPLACE", onComplete: (Boolean, String) -> Unit) {
+    fun exportAllDataToUri(uri: Uri, onComplete: ((Boolean, String) -> Unit)? = null) {
         val user = (authState.value as? AuthState.Authenticated)?.user ?: return
         viewModelScope.launch {
+            _isBackupLoading.value = true
             try {
-                val content = file.readText()
+                driveBackupManager.exportToUri(uri, user.id, user.email)
+                    .onSuccess {
+                        _lastBackupTime.value = System.currentTimeMillis()
+                        _userMessage.emit("Financial backup exported successfully!")
+                        loadBackups()
+                        onComplete?.invoke(true, "Backup exported successfully")
+                    }
+                    .onFailure { err ->
+                        _userMessage.emit("Export failed: ${err.localizedMessage}")
+                        onComplete?.invoke(false, err.localizedMessage ?: "Export failed")
+                    }
+            } finally {
+                _isBackupLoading.value = false
+            }
+        }
+    }
+
+    fun inspectBackupFromUri(uri: Uri, onResult: (BackupValidationResult, String) -> Unit) {
+        viewModelScope.launch {
+            _isBackupLoading.value = true
+            try {
+                driveBackupManager.readFromUri(uri)
+                    .onSuccess { content ->
+                        val validation = driveBackupManager.validateBackupContent(content)
+                        onResult(validation, content)
+                    }
+                    .onFailure { err ->
+                        val failedValidation = BackupValidationResult(
+                            isValid = false,
+                            schemaVersion = 0,
+                            createdAt = 0,
+                            accountsCount = 0,
+                            transactionsCount = 0,
+                            udhaarCount = 0,
+                            errorMessage = err.localizedMessage ?: "Failed to read file"
+                        )
+                        onResult(failedValidation, "")
+                    }
+            } finally {
+                _isBackupLoading.value = false
+            }
+        }
+    }
+
+    fun restoreBackupContent(content: String, mode: String = "REPLACE", onComplete: (Boolean, String) -> Unit) {
+        val user = (authState.value as? AuthState.Authenticated)?.user ?: return
+        viewModelScope.launch {
+            _isBackupLoading.value = true
+            try {
                 driveBackupManager.createSafetySnapshot(user.id, user.email)
                 driveBackupManager.restorePayload(user.id, content, mode)
-                    .onSuccess {
-                        _userMessage.emit("Data restored successfully!")
-                        onComplete(true, "Restored successfully")
+                    .onSuccess { res ->
+                        val msg = if (mode.contains("MERGE", ignoreCase = true)) {
+                            "Data merged: ${res.accountsCount} accounts, ${res.transactionsCount} txs"
+                        } else {
+                            "All data restored: ${res.accountsCount} accounts, ${res.transactionsCount} txs"
+                        }
+                        _userMessage.emit(msg)
+                        loadBackups()
+                        onComplete(true, msg)
                     }
                     .onFailure {
                         _userMessage.emit("Restore failed: ${it.localizedMessage}")
                         onComplete(false, it.localizedMessage ?: "Restore failed")
                     }
             } catch (e: Exception) {
+                _userMessage.emit("Restore error: ${e.localizedMessage}")
                 onComplete(false, e.localizedMessage ?: "Unknown error")
+            } finally {
+                _isBackupLoading.value = false
             }
+        }
+    }
+
+    fun restoreBackupFile(file: File, mode: String = "REPLACE", onComplete: (Boolean, String) -> Unit) {
+        try {
+            val content = file.readText()
+            restoreBackupContent(content, mode, onComplete)
+        } catch (e: Exception) {
+            onComplete(false, e.localizedMessage ?: "Failed to read local file")
         }
     }
 

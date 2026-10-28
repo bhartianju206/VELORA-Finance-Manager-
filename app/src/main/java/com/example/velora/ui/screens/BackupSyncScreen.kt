@@ -1,15 +1,17 @@
 package com.example.velora.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import com.example.R
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,15 +25,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -56,12 +63,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.velora.backup.BackupMetadata
 import com.example.velora.backup.BackupValidationResult
 import com.example.velora.data.repository.AuthState
@@ -78,8 +88,12 @@ import com.example.velora.ui.theme.TextMuted
 import com.example.velora.ui.theme.TextPrimary
 import com.example.velora.ui.theme.TextSecondary
 import com.example.velora.ui.theme.WarningGold
+import com.example.velora.util.CurrencyHelper
 import com.example.velora.util.DateUtils
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun BackupSyncScreen(
@@ -96,11 +110,32 @@ fun BackupSyncScreen(
 
     var showDriveSetupDialog by remember { mutableStateOf(false) }
     var showTokenInputDialog by remember { mutableStateOf(false) }
-    var backupToRestorePreview by remember { mutableStateOf<Pair<File, BackupValidationResult>?>(null) }
+
+    // Pair of (raw JSON content, validation result)
+    var backupToRestorePreview by remember { mutableStateOf<Pair<String, BackupValidationResult>?>(null) }
     var restoreMode by remember { mutableStateOf("REPLACE") }
     var autoBackupEnabled by remember { mutableStateOf(true) }
 
     val userEmail = (authState as? AuthState.Authenticated)?.user?.email ?: "User"
+
+    // Storage Access Framework Launchers (Zero broad storage permissions)
+    val exportJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.exportAllDataToUri(uri)
+        }
+    }
+
+    val importJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.inspectBackupFromUri(uri) { validation, content ->
+                backupToRestorePreview = Pair(content, validation)
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -124,12 +159,81 @@ fun BackupSyncScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text("Backup & Restore", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Text("Private Google Drive & Offline Snapshots", fontSize = 12.sp, color = TextSecondary)
+                        Text("Export All Data, Cloud Sync & Safe Restore", fontSize = 12.sp, color = TextSecondary)
                     }
                 }
 
                 IconButton(onClick = { showDriveSetupDialog = true }) {
                     Icon(Icons.Default.HelpOutline, contentDescription = "Setup Guide", tint = EmeraldMint)
+                }
+            }
+        }
+
+        // Complete Financial Data Export & Import Card (SAF File Picker)
+        item {
+            Card(
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = AmoledCard),
+                modifier = Modifier.fillMaxWidth().testTag("export_import_all_card")
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(EmeraldPrimary.copy(alpha = 0.2f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Upload, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text("Export & Import All Financial Data", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+                            Text("Single portable velora_backup.json file", fontSize = 12.sp, color = EmeraldMint)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        "Includes all income & expense transactions, account transfers, accounts & opening balances, Udhaar debts & partial repayments, custom categories, budgets, and recurring schedules with full balance integrity.",
+                        fontSize = 12.sp,
+                        color = TextSecondary,
+                        lineHeight = 16.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                                exportJsonLauncher.launch("velora_backup_$dateStr.json")
+                            },
+                            modifier = Modifier.weight(1f).testTag("export_all_data_btn"),
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                            enabled = !isBackupLoading
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF003822))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Export All Data", color = Color(0xFF003822), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                importJsonLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                            },
+                            modifier = Modifier.weight(1f).testTag("import_all_data_btn"),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldMint),
+                            enabled = !isBackupLoading
+                        ) {
+                            Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp), tint = EmeraldMint)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Import Backup", color = EmeraldMint, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
                 }
             }
         }
@@ -154,14 +258,14 @@ fun BackupSyncScreen(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column {
                         Text(
-                            "Private Cloud & Offline Backups",
+                            "Tamper-Proof SHA-256 Backups",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            "Encrypted snapshots stored directly into your own Google Drive and local storage with SHA-256 integrity.",
+                            "Every Velora backup includes cryptographic checksums and automatic local safety snapshots before any restore.",
                             fontSize = 11.sp,
                             color = TextSecondary,
                             lineHeight = 15.sp
@@ -203,7 +307,7 @@ fun BackupSyncScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
                                 Text(
-                                    if (driveAccessToken != null) "Google Drive Connected" else "Google Drive Not Connected",
+                                    if (driveAccessToken != null) "Google Drive Connected" else "Google Drive Cloud Backup",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
                                     color = TextPrimary
@@ -242,7 +346,7 @@ fun BackupSyncScreen(
             }
         }
 
-        // Backup Action Card
+        // Quick Snapshot Action Card
         item {
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -256,10 +360,10 @@ fun BackupSyncScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Last Successful Backup", fontSize = 12.sp, color = TextSecondary)
+                            Text("Last Saved Snapshot", fontSize = 12.sp, color = TextSecondary)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                if (lastBackup != null) DateUtils.formatDateTime(lastBackup!!) else "No backup yet",
+                                if (lastBackup != null) DateUtils.formatDateTime(lastBackup!!) else "No snapshots yet",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (lastBackup != null) EmeraldMint else TextMuted
@@ -275,7 +379,7 @@ fun BackupSyncScreen(
                             if (isBackupLoading) {
                                 CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color(0xFF003822))
                             } else {
-                                Text("Backup Now", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
+                                Text("Snapshot Now", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -288,8 +392,8 @@ fun BackupSyncScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Automatic Daily Backup", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                            Text("Sync when connected to Wi-Fi / Network", fontSize = 11.sp, color = TextMuted)
+                            Text("Automatic Daily Snapshot", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                            Text("Captures local snapshots during daily usage", fontSize = 11.sp, color = TextMuted)
                         }
 
                         Switch(
@@ -307,7 +411,7 @@ fun BackupSyncScreen(
 
         // Available Backups List
         item {
-            Text("AVAILABLE BACKUP VERSIONS (${localBackups.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EmeraldMint, letterSpacing = 1.sp)
+            Text("LOCAL BACKUP ARCHIVE (${localBackups.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EmeraldMint, letterSpacing = 1.sp)
         }
 
         if (localBackups.isEmpty()) {
@@ -318,7 +422,7 @@ fun BackupSyncScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Box(modifier = Modifier.padding(20.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("No saved backup files yet. Tap 'Backup Now' above.", color = TextSecondary, fontSize = 13.sp)
+                        Text("No saved backup files yet. Use 'Export All Data' or 'Snapshot Now' above.", color = TextSecondary, fontSize = 13.sp)
                     }
                 }
             }
@@ -350,13 +454,13 @@ fun BackupSyncScreen(
                                 if (file.exists()) {
                                     val content = file.readText()
                                     val validation = viewModel.driveBackupManager.validateBackupContent(content)
-                                    backupToRestorePreview = Pair(file, validation)
+                                    backupToRestorePreview = Pair(content, validation)
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AmoledBorder),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("Restore", color = TextPrimary, fontSize = 12.sp)
+                            Text("Inspect & Restore", color = TextPrimary, fontSize = 12.sp)
                         }
                     }
                 }
@@ -383,7 +487,7 @@ fun BackupSyncScreen(
                                 "3. Configure OAuth Consent Screen\n" +
                                 "4. Add Android OAuth Client with package name: com.aistudio.velora.kxmpzq\n" +
                                 "5. Velora isolates backups so other apps cannot access them.\n\n" +
-                                "Offline local snapshots are fully functional and store the identical JSON schema with SHA-256 checksum integrity verification.",
+                                "Offline local snapshots and JSON exports are fully functional and store the identical schema with SHA-256 checksum integrity verification.",
                         fontSize = 12.sp,
                         color = TextSecondary
                     )
@@ -458,67 +562,118 @@ fun BackupSyncScreen(
 
     // Restore Safety Preview & Confirmation Modal
     if (backupToRestorePreview != null) {
-        val (file, validation) = backupToRestorePreview!!
+        val (content, validation) = backupToRestorePreview!!
 
         Dialog(onDismissRequest = { backupToRestorePreview = null }) {
             Card(
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = AmoledSurface),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().testTag("restore_preview_dialog")
             ) {
-                Column(modifier = Modifier.padding(24.dp)) {
-                    Text("Restore Safety Verification", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(8.dp))
+                Column(modifier = Modifier.padding(22.dp)) {
+                    Text("Backup Preview & Validation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     if (!validation.isValid) {
-                        Text("Integrity Check Failed: ${validation.errorMessage}", color = ExpenseCoral, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = ExpenseCoral, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Verification Failed", color = ExpenseCoral, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(validation.errorMessage ?: "Corrupted file.", color = TextSecondary, fontSize = 12.sp)
+
+                        Spacer(modifier = Modifier.height(18.dp))
                         Button(
                             onClick = { backupToRestorePreview = null },
                             colors = ButtonDefaults.buttonColors(containerColor = AmoledBorder),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Close")
+                            Text("Close", color = TextPrimary)
                         }
                     } else {
                         DetailRow("Backup Date", DateUtils.formatDateTime(validation.createdAt))
                         DetailRow("Schema Version", "v${validation.schemaVersion}")
-                        DetailRow("Integrity Status", "Verified SHA-256 Checksum")
-                        DetailRow("Accounts to restore", "${validation.accountsCount}")
-                        DetailRow("Transactions to restore", "${validation.transactionsCount}")
-                        DetailRow("Udhaar records", "${validation.udhaarCount}")
+                        DetailRow("SHA-256 Checksum", "Verified & Untampered")
+                        DetailRow("Accounts found", "${validation.accountsCount}")
+                        DetailRow("Transactions found", "${validation.transactionsCount}")
+                        DetailRow("Udhaar loans", "${validation.udhaarCount} (repayments: ${validation.paymentsCount})")
+                        DetailRow("Budgets & Reminders", "${validation.budgetsCount} budgets, ${validation.remindersCount} reminders")
+                        DetailRow("Liquid Balance", CurrencyHelper.formatPaise(validation.totalBalancePaise))
 
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        Text("Restoration Mode:", fontSize = 12.sp, color = TextSecondary)
+                        Text("Select Restoration Mode:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = { restoreMode = "REPLACE" },
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (restoreMode == "REPLACE") ExpenseCoral.copy(alpha = 0.2f) else Color.Transparent
-                                )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (restoreMode == "REPLACE") ExpenseCoral.copy(alpha = 0.15f) else AmoledCard
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { restoreMode = "REPLACE" }
+                                    .border(
+                                        width = if (restoreMode == "REPLACE") 1.5.dp else 0.dp,
+                                        color = if (restoreMode == "REPLACE") ExpenseCoral else Color.Transparent,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .testTag("mode_replace_btn")
                             ) {
-                                Text("Replace Data", fontSize = 11.sp, color = if (restoreMode == "REPLACE") ExpenseCoral else TextSecondary)
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("Replace All Data", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "REPLACE") ExpenseCoral else TextPrimary)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Safe overwrite with rollback protection", fontSize = 10.sp, color = TextMuted)
+                                }
                             }
-                            OutlinedButton(
-                                onClick = { restoreMode = "MERGE" },
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = if (restoreMode == "MERGE") EmeraldPrimary.copy(alpha = 0.2f) else Color.Transparent
-                                )
+
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (restoreMode == "MERGE") EmeraldPrimary.copy(alpha = 0.15f) else AmoledCard
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { restoreMode = "MERGE" }
+                                    .border(
+                                        width = if (restoreMode == "MERGE") 1.5.dp else 0.dp,
+                                        color = if (restoreMode == "MERGE") EmeraldPrimary else Color.Transparent,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .testTag("mode_merge_btn")
                             ) {
-                                Text("Merge Data", fontSize = 11.sp, color = if (restoreMode == "MERGE") EmeraldPrimary else TextSecondary)
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("Merge Data", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "MERGE") EmeraldMint else TextPrimary)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Keep existing, skip duplicates", fontSize = 10.sp, color = TextMuted)
+                                }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "* A local safety snapshot will be automatically captured prior to restoration for full rollback protection.",
-                            fontSize = 11.sp,
-                            color = TextMuted
-                        )
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        if (restoreMode == "REPLACE") {
+                            Text(
+                                "⚠️ Warning: Replacing all data safely clears current user records before importing this backup. An automated local safety snapshot is captured prior to restore for instant rollback.",
+                                fontSize = 11.sp,
+                                color = WarningGold,
+                                lineHeight = 15.sp
+                            )
+                        } else {
+                            Text(
+                                "ℹ️ Merge preserves all existing records, skips transactions with matching IDs to prevent duplicates, and recomputes all account balances consistently.",
+                                fontSize = 11.sp,
+                                color = EmeraldMint,
+                                lineHeight = 15.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(18.dp))
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             OutlinedButton(onClick = { backupToRestorePreview = null }) {
@@ -527,14 +682,25 @@ fun BackupSyncScreen(
                             Spacer(modifier = Modifier.width(10.dp))
                             Button(
                                 onClick = {
-                                    viewModel.restoreBackupFile(file, restoreMode) { success, msg ->
+                                    viewModel.restoreBackupContent(content, restoreMode) { success, msg ->
                                         backupToRestorePreview = null
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
-                                modifier = Modifier.testTag("confirm_restore_btn")
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (restoreMode == "REPLACE") ExpenseCoral else EmeraldPrimary
+                                ),
+                                modifier = Modifier.testTag("confirm_restore_btn"),
+                                enabled = !isBackupLoading
                             ) {
-                                Text("Restore Now", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
+                                if (isBackupLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                                } else {
+                                    Text(
+                                        if (restoreMode == "REPLACE") "Confirm & Replace" else "Confirm & Merge",
+                                        color = if (restoreMode == "REPLACE") Color.White else Color(0xFF003822),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                         }
                     }

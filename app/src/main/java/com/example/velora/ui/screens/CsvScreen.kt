@@ -1,6 +1,12 @@
 package com.example.velora.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -84,6 +90,14 @@ fun CsvScreen(
     var importPreview by remember { mutableStateOf<CsvImportPreview?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
+    val exportJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.exportAllDataToUri(uri)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -103,12 +117,49 @@ fun CsvScreen(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
-                    Text("CSV Export & Import", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Standard spreadsheet exchange", fontSize = 12.sp, color = TextSecondary)
+                    Text("Data Export & Import", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Spreadsheet CSV & Complete JSON Backup", fontSize = 12.sp, color = TextSecondary)
                 }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Complete JSON Backup Card
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = AmoledCard),
+                modifier = Modifier.fillMaxWidth().testTag("export_all_json_banner")
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Download, contentDescription = null, tint = EmeraldPrimary)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Export All Financial Data (JSON)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Export a single portable velora_backup.json file containing all transactions, accounts, Udhaar loans, repayments and budgets with 100% balance fidelity.",
+                        fontSize = 12.sp,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Button(
+                        onClick = {
+                            val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                            exportJsonLauncher.launch("velora_backup_$dateStr.json")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                        modifier = Modifier.fillMaxWidth().testTag("csv_export_all_json_btn")
+                    ) {
+                        Text("Export Complete Backup File", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Export Card
             Card(

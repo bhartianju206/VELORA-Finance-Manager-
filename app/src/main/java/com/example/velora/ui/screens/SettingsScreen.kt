@@ -1,7 +1,12 @@
 package com.example.velora.ui.screens
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,18 +24,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.velora.backup.BackupValidationResult
 import com.example.velora.data.repository.AuthState
 import com.example.velora.ui.VeloraViewModel
 import com.example.velora.ui.theme.AmoledBackground
@@ -69,7 +79,13 @@ import com.example.velora.ui.theme.ExpenseCoral
 import com.example.velora.ui.theme.TextMuted
 import com.example.velora.ui.theme.TextPrimary
 import com.example.velora.ui.theme.TextSecondary
+import com.example.velora.ui.theme.WarningGold
+import com.example.velora.util.CurrencyHelper
+import com.example.velora.util.DateUtils
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -82,12 +98,35 @@ fun SettingsScreen(
     val authState by viewModel.authState.collectAsStateWithLifecycle()
     val isHidden by viewModel.isBalanceHidden.collectAsStateWithLifecycle()
     val isAppLockEnabled by viewModel.authRepository.isAppLockEnabled.collectAsStateWithLifecycle(initialValue = false)
+    val isBackupLoading by viewModel.isBackupLoading.collectAsStateWithLifecycle()
 
     var showPinDialog by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showSetupGuideDialog by remember { mutableStateOf(false) }
 
+    var backupToRestorePreview by remember { mutableStateOf<Pair<String, BackupValidationResult>?>(null) }
+    var restoreMode by remember { mutableStateOf("REPLACE") }
+
     val user = (authState as? AuthState.Authenticated)?.user
+
+    // Storage Access Framework Launchers
+    val exportJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.exportAllDataToUri(uri)
+        }
+    }
+
+    val importJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            viewModel.inspectBackupFromUri(uri) { validation, content ->
+                backupToRestorePreview = Pair(content, validation)
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -106,7 +145,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text("Settings & Security", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Account isolation, PIN lock & setup guides", fontSize = 12.sp, color = TextSecondary)
+                    Text("Account isolation, PIN lock & data portability", fontSize = 12.sp, color = TextSecondary)
                 }
             }
         }
@@ -198,6 +237,64 @@ fun SettingsScreen(
                             },
                             colors = SwitchDefaults.colors(checkedThumbColor = EmeraldPrimary, checkedTrackColor = EmeraldDark)
                         )
+                    }
+                }
+            }
+        }
+
+        // Data Backup & Portability Section
+        item {
+            Text("DATA BACKUP & PORTABILITY", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EmeraldMint, letterSpacing = 1.sp)
+        }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = AmoledCard),
+                modifier = Modifier.fillMaxWidth().testTag("data_portability_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Export or Restore All Data", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TextPrimary)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Export a single portable velora_backup.json file containing all your transactions, accounts, Udhaar loans and budgets, or restore it on any device.",
+                        fontSize = 12.sp,
+                        color = TextSecondary,
+                        lineHeight = 16.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                                exportJsonLauncher.launch("velora_backup_$dateStr.json")
+                            },
+                            modifier = Modifier.weight(1f).testTag("settings_export_btn"),
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                            enabled = !isBackupLoading
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF003822))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Export All", color = Color(0xFF003822), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                importJsonLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                            },
+                            modifier = Modifier.weight(1f).testTag("settings_import_btn"),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldMint),
+                            enabled = !isBackupLoading
+                        ) {
+                            Icon(Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(16.dp), tint = EmeraldMint)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Import & Restore", color = EmeraldMint, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -300,30 +397,28 @@ fun SettingsScreen(
 
                     OutlinedTextField(
                         value = pin,
-                        onValueChange = { if (it.length <= 6) pin = it },
-                        label = { Text("Enter 4-6 digit PIN") },
+                        onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) pin = it },
+                        label = { Text("4-digit PIN") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = EmeraldPrimary, unfocusedBorderColor = AmoledBorder)
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
                     OutlinedTextField(
                         value = confirmPin,
-                        onValueChange = { if (it.length <= 6) confirmPin = it },
-                        label = { Text("Confirm PIN") },
+                        onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) confirmPin = it },
+                        label = { Text("Confirm 4-digit PIN") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = EmeraldPrimary, unfocusedBorderColor = AmoledBorder)
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     if (error != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(error!!, color = ExpenseCoral, fontSize = 12.sp)
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         OutlinedButton(onClick = { showPinDialog = false }) {
@@ -332,8 +427,8 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Button(
                             onClick = {
-                                if (pin.length < 4) {
-                                    error = "PIN must be at least 4 digits"
+                                if (pin.length != 4) {
+                                    error = "PIN must be exactly 4 digits"
                                     return@Button
                                 }
                                 if (pin != confirmPin) {
@@ -347,7 +442,7 @@ fun SettingsScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
                         ) {
-                            Text("Enable Lock", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
+                            Text("Save PIN", color = Color(0xFF003822), fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -355,14 +450,15 @@ fun SettingsScreen(
         }
     }
 
-    // Delete Account Confirmation
+    // Delete Confirmation Dialog
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("Delete Account Permanently?", fontWeight = FontWeight.Bold, color = ExpenseCoral) },
+            title = { Text("Wipe All Financial Data?", fontWeight = FontWeight.Bold, color = ExpenseCoral) },
             text = {
                 Text(
-                    "This action cannot be undone. All your accounts, transactions, Udhaar records, budgets, and local safety snapshots will be completely erased from this device.",
+                    "This will permanently delete all your accounts, transactions, Udhaar records, and budgets from this device.\n\n" +
+                            "This action cannot be undone unless you have a saved velora_backup.json export.",
                     color = TextSecondary,
                     fontSize = 13.sp
                 )
@@ -370,12 +466,12 @@ fun SettingsScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        scope.launch {
-                            val userId = viewModel.authRepository.deleteAccount().getOrNull()
-                            if (userId != null) {
-                                viewModel.repository.deleteUserAllData(userId)
+                        user?.let { u ->
+                            scope.launch {
+                                viewModel.repository.deleteUserAllData(u.id)
+                                viewModel.authRepository.logout()
+                                showDeleteConfirmDialog = false
                             }
-                            showDeleteConfirmDialog = false
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = ExpenseCoral)
@@ -424,5 +520,154 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    // Restore Preview & Confirmation Dialog
+    if (backupToRestorePreview != null) {
+        val (content, validation) = backupToRestorePreview!!
+
+        Dialog(onDismissRequest = { backupToRestorePreview = null }) {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = AmoledSurface),
+                modifier = Modifier.fillMaxWidth().testTag("settings_restore_preview_dialog")
+            ) {
+                Column(modifier = Modifier.padding(22.dp)) {
+                    Text("Backup Preview & Validation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (!validation.isValid) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = ExpenseCoral, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Verification Failed", color = ExpenseCoral, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(validation.errorMessage ?: "Corrupted file.", color = TextSecondary, fontSize = 12.sp)
+
+                        Spacer(modifier = Modifier.height(18.dp))
+                        Button(
+                            onClick = { backupToRestorePreview = null },
+                            colors = ButtonDefaults.buttonColors(containerColor = AmoledBorder),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Close", color = TextPrimary)
+                        }
+                    } else {
+                        DetailRow("Backup Date", DateUtils.formatDateTime(validation.createdAt))
+                        DetailRow("Schema Version", "v${validation.schemaVersion}")
+                        DetailRow("SHA-256 Checksum", "Verified & Untampered")
+                        DetailRow("Accounts found", "${validation.accountsCount}")
+                        DetailRow("Transactions found", "${validation.transactionsCount}")
+                        DetailRow("Udhaar loans", "${validation.udhaarCount} (repayments: ${validation.paymentsCount})")
+                        DetailRow("Budgets & Reminders", "${validation.budgetsCount} budgets, ${validation.remindersCount} reminders")
+                        DetailRow("Liquid Balance", CurrencyHelper.formatPaise(validation.totalBalancePaise))
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text("Select Restoration Mode:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (restoreMode == "REPLACE") ExpenseCoral.copy(alpha = 0.15f) else AmoledCard
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { restoreMode = "REPLACE" }
+                                    .border(
+                                        width = if (restoreMode == "REPLACE") 1.5.dp else 0.dp,
+                                        color = if (restoreMode == "REPLACE") ExpenseCoral else Color.Transparent,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .testTag("settings_mode_replace_btn")
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("Replace All Data", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "REPLACE") ExpenseCoral else TextPrimary)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Safe overwrite with rollback protection", fontSize = 10.sp, color = TextMuted)
+                                }
+                            }
+
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (restoreMode == "MERGE") EmeraldPrimary.copy(alpha = 0.15f) else AmoledCard
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { restoreMode = "MERGE" }
+                                    .border(
+                                        width = if (restoreMode == "MERGE") 1.5.dp else 0.dp,
+                                        color = if (restoreMode == "MERGE") EmeraldPrimary else Color.Transparent,
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .testTag("settings_mode_merge_btn")
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text("Merge Data", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = if (restoreMode == "MERGE") EmeraldMint else TextPrimary)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text("Keep existing, skip duplicates", fontSize = 10.sp, color = TextMuted)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        if (restoreMode == "REPLACE") {
+                            Text(
+                                "⚠️ Warning: Replacing all data safely clears current user records before importing this backup. An automated local safety snapshot is captured prior to restore for instant rollback.",
+                                fontSize = 11.sp,
+                                color = WarningGold,
+                                lineHeight = 15.sp
+                            )
+                        } else {
+                            Text(
+                                "ℹ️ Merge preserves all existing records, skips transactions with matching IDs to prevent duplicates, and recomputes all account balances consistently.",
+                                fontSize = 11.sp,
+                                color = EmeraldMint,
+                                lineHeight = 15.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(18.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            OutlinedButton(onClick = { backupToRestorePreview = null }) {
+                                Text("Cancel", color = TextSecondary)
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Button(
+                                onClick = {
+                                    viewModel.restoreBackupContent(content, restoreMode) { success, msg ->
+                                        backupToRestorePreview = null
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (restoreMode == "REPLACE") ExpenseCoral else EmeraldPrimary
+                                ),
+                                modifier = Modifier.testTag("settings_confirm_restore_btn"),
+                                enabled = !isBackupLoading
+                            ) {
+                                if (isBackupLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                                } else {
+                                    Text(
+                                        if (restoreMode == "REPLACE") "Confirm & Replace" else "Confirm & Merge",
+                                        color = if (restoreMode == "REPLACE") Color.White else Color(0xFF003822),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
