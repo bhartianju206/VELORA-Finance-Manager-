@@ -1,6 +1,8 @@
 package com.example.velora.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -114,27 +116,32 @@ fun VeloraApp(
         }
     }
 
-    if (showSplash) {
-        SplashScreen(onSplashFinished = { showSplash = false })
-        return
-    }
-
-    when (val state = authState) {
-        is AuthState.Unauthenticated -> {
-            AuthScreen(
-                authRepository = viewModel.authRepository,
-                onAuthSuccess = { /* Automatically handled via DataStore Flow */ }
-            )
-        }
-        is AuthState.Authenticated -> {
-            if (state.isLocked && !isAppUnlocked) {
-                // PIN Lock Screen
-                AppLockPinScreen(
-                    onVerifyPin = { pin -> viewModel.authRepository.verifyPin(pin) },
-                    onUnlocked = { viewModel.unlockApp() }
-                )
-            } else {
-                MainAppScaffold(viewModel = viewModel, snackbarHostState = snackbarHostState)
+    Crossfade(
+        targetState = showSplash,
+        animationSpec = tween(durationMillis = 350),
+        label = "splash_screen_transition"
+    ) { isSplash ->
+        if (isSplash) {
+            SplashScreen(onSplashFinished = { showSplash = false })
+        } else {
+            when (val state = authState) {
+                is AuthState.Unauthenticated -> {
+                    AuthScreen(
+                        authRepository = viewModel.authRepository,
+                        onAuthSuccess = { /* Automatically handled via DataStore Flow */ }
+                    )
+                }
+                is AuthState.Authenticated -> {
+                    if (state.isLocked && !isAppUnlocked) {
+                        // PIN Lock Screen
+                        AppLockPinScreen(
+                            onVerifyPin = { pin -> viewModel.authRepository.verifyPin(pin) },
+                            onUnlocked = { viewModel.unlockApp() }
+                        )
+                    } else {
+                        MainAppScaffold(viewModel = viewModel, snackbarHostState = snackbarHostState)
+                    }
+                }
             }
         }
     }
