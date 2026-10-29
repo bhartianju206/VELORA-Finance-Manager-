@@ -16,7 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
@@ -536,8 +540,8 @@ fun AuthScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Real Functional Google Sign-In button with Google G branding
-                    OutlinedButton(
+                    // Premium Emerald & Obsidian Google Sign-In Button matching visual design
+                    Surface(
                         onClick = {
                             scope.launch {
                                 val detectedClientId = authRepository.resolveWebClientId()
@@ -548,27 +552,154 @@ fun AuthScreen(
                                 }
                             }
                         },
+                        enabled = !isLoading,
+                        shape = RoundedCornerShape(32.dp),
+                        color = Color.Transparent,
+                        border = BorderStroke(
+                            width = 1.5.dp,
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(
+                                    Color(0xFF047857),
+                                    Color(0xFF10B981),
+                                    Color(0xFF6EE7B7),
+                                    Color(0xFF10B981),
+                                    Color(0xFF047857)
+                                )
+                            )
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("google_sign_in_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, AmoledBorder),
-                        enabled = !isLoading
+                            .height(60.dp)
+                            .testTag("google_sign_in_button")
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Official Google G indicator
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(
+                                            Color(0xFF01140D),
+                                            Color(0xFF021E14),
+                                            Color(0xFF03291B),
+                                            Color(0xFF021B12),
+                                            Color(0xFF01140D)
+                                        )
+                                    )
+                                )
+                                .padding(horizontal = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            // Internal subtle glowing emerald glass ribbon sweep
                             Box(
                                 modifier = Modifier
-                                    .size(20.dp)
-                                    .background(Color.White, CircleShape),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.linearGradient(
+                                            colors = listOf(
+                                                Color.Transparent,
+                                                Color(0xFF10B981).copy(alpha = 0.09f),
+                                                Color.Transparent
+                                            ),
+                                            start = androidx.compose.ui.geometry.Offset(0f, 0f),
+                                            end = androidx.compose.ui.geometry.Offset(500f, 150f)
+                                        )
+                                    )
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("G", fontWeight = FontWeight.Black, fontSize = 13.sp, color = Color(0xFF4285F4))
+                                // Left: Elevated Circular Medallion with Official Google "G"
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(Color(0xFF020E08), CircleShape)
+                                        .border(
+                                            BorderStroke(
+                                                1.5.dp,
+                                                Brush.sweepGradient(
+                                                    listOf(
+                                                        Color(0xFF10B981),
+                                                        Color(0xFF6EE7B7),
+                                                        Color(0xFF059669),
+                                                        Color(0xFF10B981)
+                                                    )
+                                                )
+                                            ),
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Image(
+                                        painter = painterResource(id = R.drawable.ic_google_g),
+                                        contentDescription = "Google Logo",
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+
+                                // Center: "Continue with / Google" Typography
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "Continue with",
+                                        color = Color(0xFFD1D5DB),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Normal,
+                                        letterSpacing = 0.4.sp
+                                    )
+                                    Text(
+                                        text = "Google",
+                                        color = Color.White,
+                                        fontSize = 21.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 0.2.sp
+                                    )
+                                }
+
+                                // Right: Divider & Sleek Emerald Chevron
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(end = 6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(1.dp)
+                                            .height(26.dp)
+                                            .background(Color(0xFF10B981).copy(alpha = 0.35f))
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    if (isLoading) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = Color(0xFF34D399),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Canvas(modifier = Modifier.size(10.dp, 16.dp)) {
+                                            val strokeWidth = 2.4.dp.toPx()
+                                            val path = androidx.compose.ui.graphics.Path().apply {
+                                                moveTo(0f, 0f)
+                                                lineTo(size.width, size.height / 2f)
+                                                lineTo(0f, size.height)
+                                            }
+                                            drawPath(
+                                                path = path,
+                                                color = Color(0xFF6EE7B7),
+                                                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                                    width = strokeWidth,
+                                                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("Continue with Google", fontWeight = FontWeight.Medium)
                         }
                     }
 
