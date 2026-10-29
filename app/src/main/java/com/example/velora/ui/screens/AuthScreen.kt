@@ -254,7 +254,7 @@ fun AuthScreen(
             painter = painterResource(id = R.drawable.bg_login),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize().alpha(0.85f)
+            modifier = Modifier.fillMaxSize()
         )
 
         // Subtle gradient vignette overlay for optimal form contrast
